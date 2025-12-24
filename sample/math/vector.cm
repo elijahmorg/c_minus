@@ -1,0 +1,15 @@
+module "math"
+
+pub struct Vec3 {
+    float x;
+    float y;
+    float z;
+};
+
+pub func dot(a Vec3, b Vec3) float {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+func helper() int {
+    return 42;
+}

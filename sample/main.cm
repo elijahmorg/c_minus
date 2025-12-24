@@ -1,0 +1,18 @@
+module "main"
+
+import "math"
+
+func main() int {
+    math.Vec3 a;
+    a.x = 1.0;
+    a.y = 2.0;
+    a.z = 3.0;
+    
+    math.Vec3 b;
+    b.x = 4.0;
+    b.y = 5.0;
+    b.z = 6.0;
+    
+    float result = math.dot(a, b);
+    return (int)result;
+}

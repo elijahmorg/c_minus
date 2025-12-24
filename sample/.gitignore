@@ -1,0 +1,5 @@
+# C-minus build artifacts
+.c_minus/
+
+# Binary output
+sample
