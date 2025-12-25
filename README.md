@@ -8,240 +8,192 @@ A source-to-source transpiler that compiles C-minus (`.cm` files) into standard 
 
 ---
 
-## Language Design
+## Current Features
 
-### Modules
+### Module System
 
 Go-style module system replacing the header/include model. Each source file declares its module and explicitly imports dependencies. The transpiler generates .h/.c pairs automatically—developers never write headers.
 
+```
+module "math"
+
+import "utils"
+
+pub func add(int a, int b) int {
+    return a + b;
+}
+```
+
 ### No Header Files
 
-Public declarations are marked in source (e.g., `pub` keyword). The transpiler extracts these and emits headers. Implementation details stay private by default.
+Public declarations are marked with the `pub` keyword. The transpiler extracts these and emits headers. Implementation details stay private by default.
 
 ### No Circular Dependencies
 
-Module imports form a DAG enforced at compile time. The transpiler builds a dependency graph, topologically sorts it, and rejects cycles. This eliminates the class of bugs caused by tangled include hierarchies.
+Module imports form a DAG enforced at compile time. The transpiler builds a dependency graph, topologically sorts it, and rejects cycles.
 
-### Macro Restrictions
+### C Standard Library Imports
 
-Macros cannot be exported from modules. Imported modules expose no macro definitions. Deep macro nesting (macros expanding to macros) is restricted or prohibited. This keeps preprocessing predictable and debuggable.
+Import C standard library headers with qualified access to symbols:
+
+```
+module "main"
+
+cimport "stdio.h"
+
+func main() int {
+    stdio.printf("Hello from C-minus!\n");
+    return 0;
+}
+```
+
+The `stdio.printf()` call transpiles to just `printf()` in the generated C.
+
+### Type Declarations
+
+Structs, enums, and typedefs are supported:
+
+```
+pub struct Vec3 {
+    float x;
+    float y;
+    float z;
+};
+
+pub enum Status {
+    TODO,
+    IN_PROGRESS,
+    DONE
+};
+```
+
+### C-Style Function Parameters
+
+Function parameters use C-style syntax (`type name`):
+
+```
+pub func dot(Vec3 a, Vec3 b) float {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+pub func process(Ticket* t) void {
+    t->status = DONE;
+}
+```
+
+### Build System
+
+- Incremental builds (only recompiles changed files)
+- Parallel compilation with `-j` flag
+- Binary output at project root (Go convention)
+- Intermediate files in `.c_minus/` directory
+
+---
+
+## Quick Start
+
+### Project Structure
+
+```
+myproject/
+├── cm.mod              # Project manifest
+├── main.cm             # Main module
+└── math/
+    └── vector.cm       # "math" module
+```
+
+### cm.mod
+
+```
+module "github.com/user/myproject"
+```
+
+### main.cm
+
+```
+module "main"
+
+import "math"
+
+func main() int {
+    math.Vec3 v;
+    v.x = 1.0;
+    v.y = 2.0;
+    v.z = 3.0;
+    return 0;
+}
+```
+
+### Build and Run
+
+```bash
+c_minus build
+./myproject
+```
+
+---
+
+## Generated Output
+
+Each module transpiles to a header/implementation pair:
+
+```
+math/vector.cm  →  .c_minus/math.h + .c_minus/math_vector.c
+```
+
+Generated headers contain:
+- Include guards
+- Public type definitions
+- Public function declarations
+
+Generated implementation files contain:
+- Include of own header
+- Includes of dependency headers
+- Function implementations
+
+---
+
+## Future Features
 
 ### Multiple Return Values
 
 Syntactic sugar for returning multiple values from functions:
 
 ```
-(int result, bool ok) parse(str s)
+(int result, bool ok) parse(char* s) {
+    if (s == NULL) {
+        return (0, false);
+    }
+    return (atoi(s), true);
+}
 ```
 
 Transpiles to out-parameters:
 
 ```c
-void parse(str s, int *result, bool *ok);
-```
-
-Return statements in the body are expanded to pointer assignments:
-
-```
-(int result, bool ok) parse(str s) {
-    if (s.len == 0) {
-        return (0, false);
-    }
-    return (atoi(s.data), true);
-}
-```
-
-Becomes:
-
-```c
-void parse(str s, int *result, bool *ok) {
-    if (s.len == 0) {
+void parse(char* s, int* result, bool* ok) {
+    if (s == NULL) {
         *result = 0;
         *ok = false;
         return;
     }
-    *result = atoi(s.data);
+    *result = atoi(s);
     *ok = true;
     return;
 }
 ```
 
-All return values remain on the caller's stack—no heap allocation, no ownership transfer, no cleanup required. This is pure syntactic sugar over the standard C out-parameter convention.
+### Macro Restrictions
 
----
+Macros cannot be exported from modules. Imported modules expose no macro definitions. This keeps preprocessing predictable and debuggable.
 
-## Implementation: Go + Participle
+### Source Mapping
 
-### Why Go
+Emit `#line` directives in generated C so compiler errors and debugger stepping refer back to original source locations.
 
-- Fast compilation and execution (within 10-20% of C for this workload)
-- Excellent string handling and memory safety—no manual allocation during AST manipulation
-- Rapid iteration during language design phase
-- Strong standard library for file I/O, text processing, and tooling
+### External Dependencies
 
-### Why Participle
-
-Participle is a Go parser generator that derives parsers from struct definitions via reflection. You define your AST as Go types with tagged fields; Participle builds a recursive descent parser at runtime.
-
-**Key characteristics:**
-
-- No code generation step—parser constructed at startup via reflection
-- Grammar defined inline using struct tags with EBNF-like syntax
-- Alternation via Go interfaces (parser tries each implementing type)
-- Custom lexer support for token definitions
-- Fast iteration: change struct, rerun program
-
-**Example AST definition:**
-
-```go
-type File struct {
-    Module  *ModuleDecl  `@@`
-    Imports []*Import    `@@*`
-    Decls   []Decl       `@@*`
-}
-
-type ModuleDecl struct {
-    Name string `"module" @Ident`
-}
-
-type Import struct {
-    Path string `"import" @String`
-}
-```
-
-### Parsing Strategy
-
-The language extensions live primarily at the file and signature level—module declarations, imports, function signatures with multiple returns. Most of the function body remains standard C, but the transpiler must parse return statements in functions with multiple return values to expand tuple returns into pointer assignments. This requires:
-
-1. Identifying `return (expr1, expr2, ...);` statements
-2. Parsing the tuple expressions
-3. Rewriting to `*out1 = expr1; *out2 = expr2; return;`
-
-This is not full C expression parsing—only return statements in multi-return functions need transformation. The rest of the body can still be captured via brace-balanced extraction and emitted verbatim.
-
----
-
-## Transpiler Architecture
-
-```
-Source Files (.cm)
-       │
-       ▼
-┌─────────────────────────────────────────────────┐
-│  Pass 1: Scan imports, build dependency graph   │
-│          Detect and reject circular deps        │
-└─────────────────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────┐
-│  Pass 2: Parse each file                        │
-│          Module decls, imports, signatures      │
-│          Extract function bodies as raw text    │
-└─────────────────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────┐
-│  Pass 3: Resolve types across modules           │
-│          Validate macro restrictions            │
-│          Type-check public interfaces           │
-└─────────────────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────┐
-│  Pass 4: Emit .h/.c pairs                       │
-│          Generate include guards                │
-│          Synthesize return-value structs        │
-│          Output in dependency order             │
-└─────────────────────────────────────────────────┘
-       │
-       ▼
-   Standard C (.h + .c)
-       │
-       ▼
-   gcc / clang
-```
-
----
-
-## Output Structure
-
-Each module transpiles to a header/implementation pair:
-
-```
-math/vector.cm  →  math_vector.h + math_vector.c
-```
-
-Generated headers contain:
-- Include guards
-- Forward declarations as needed
-- Public type definitions
-- Public function declarations
-- Transformed multi-return function signatures (out-parameters)
-
-Generated implementation files contain:
-- Include of own header
-- Includes of dependency headers
-- Private declarations
-- Function implementations (bodies emitted verbatim)
-
----
-
-## Module System
-
-Following Go's module model.
-
-### Project Structure
-
-A `cm.mod` file marks the project root and declares the module path:
-
-```
-module "github.com/user/myproject"
-```
-
-A **module is a directory**. All `.cm` files in a directory belong to the same module and share a namespace (like Go packages):
-
-```
-myproject/
-├── cm.mod                  # project manifest (no code)
-├── main.cm                 # module "main"
-└── math/
-    ├── vector.cm           # module "math"
-    └── matrix.cm           # module "math" (same module)
-```
-
-### Import Resolution
-
-Imports resolve to directories relative to the project root:
-
-```
-import "math"
-```
-
-Resolves to `<project_root>/math/*.cm`
-
-### Dependency Graph
-
-The transpiler scans all `.cm` files for `module` and `import` statements (fast regex/minimal parse), builds a dependency graph, topologically sorts it, and rejects cycles before full parsing begins.
-
-```go
-type ModuleGraph struct {
-    RootPath   string                  // filesystem path to project root
-    RootModule string                  // "github.com/user/myproject"
-    Modules    map[string]*ModuleInfo  // import path -> info
-}
-
-type ModuleInfo struct {
-    ImportPath string   // "math"
-    DirPath    string   // filesystem path to module directory
-    Files      []string // all .cm files in the module
-    Imports    []string
-    External   bool     // false for local, true for external deps
-}
-```
-
-### External Dependencies (Future)
-
-The initial implementation only supports local imports. The design accommodates future external dependency support via a `require` block in `cm.mod`:
+Support for external module dependencies via `cm.mod`:
 
 ```
 module "github.com/user/myproject"
@@ -251,7 +203,27 @@ require (
 )
 ```
 
-External imports would resolve from a module cache (similar to Go's `GOMODCACHE`).
+### Better Error Diagnostics
+
+Error messages with file:line:col context and multiple error collection before failing.
+
+---
+
+## Implementation
+
+Written in Go. Uses a manual recursive descent parser with brace-balanced extraction for function bodies.
+
+### Package Structure
+
+```
+cmd/c_minus/          # CLI
+internal/
+├── project/          # Project discovery and validation
+├── parser/           # C-minus parser
+├── codegen/          # Code generator
+├── transform/        # Body transformations (qualified names, etc.)
+└── build/            # Build orchestration
+```
 
 ---
 
@@ -259,12 +231,9 @@ External imports would resolve from a module cache (similar to Go's `GOMODCACHE`
 
 ### Forward Declarations
 
-Pointer-to-struct across modules isn't a circular dependency (no implementation coupling), but requires careful header ordering or forward declarations. The cycle detector should distinguish structural cycles from pointer-only references.
+Pointer-to-struct across modules isn't a circular dependency. The cycle detector distinguishes structural cycles from pointer-only references.
 
-### Source Mapping
+### Module Visibility
 
-Emit `#line` directives in generated C so compiler errors and debugger stepping refer back to original source locations.
-
-### Error Diagnostics
-
-Participle provides token positions. Wrap errors with file:line:col context. Add a semantic validation pass that collects multiple errors with source locations before failing.
+- `pub` - Exported, visible to importers (public header)
+- No modifier - Module-private, visible within the same module (internal header)
