@@ -1,0 +1,9 @@
+module "fileio"
+
+pub func add_numbers(int a, int b) int {
+    return a + b;
+}
+
+pub func multiply(int a, int b) int {
+    return a * b;
+}

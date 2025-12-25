@@ -8,6 +8,7 @@ import (
 
 	"github.com/elijahmorgan/c_minus/internal/parser"
 	"github.com/elijahmorgan/c_minus/internal/project"
+	"github.com/elijahmorgan/c_minus/internal/transform"
 )
 
 func TestGeneratePublicHeader(t *testing.T) {
@@ -23,7 +24,8 @@ func TestGeneratePublicHeader(t *testing.T) {
 		"int math_multiply(int a, int b)",
 	}
 
-	err := generatePublicHeader(mod, publicTypes, publicFuncs, tmpDir)
+	imports := make(map[string]bool)
+	err := generatePublicHeader(mod, publicTypes, publicFuncs, imports, tmpDir)
 	if err != nil {
 		t.Fatalf("generatePublicHeader failed: %v", err)
 	}
@@ -136,7 +138,8 @@ func TestGenerateCFile(t *testing.T) {
 	buildDir := filepath.Join(tmpDir, "build")
 	os.MkdirAll(buildDir, 0755)
 
-	err := generateCFile(mod, file, srcFile, buildDir)
+	enumValues := make(transform.EnumValueMap)
+	err := generateCFile(mod, file, srcFile, buildDir, enumValues)
 	if err != nil {
 		t.Fatalf("generateCFile failed: %v", err)
 	}

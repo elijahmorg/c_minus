@@ -15,6 +15,22 @@ import (
 func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir string) error {
 	moduleName := sanitizeModuleName(mod.ImportPath)
 
+	// First pass: collect all type names in this module for later qualification
+	typeNames := make(map[string]bool)
+	// Also collect enum values for function body transformation
+	enumValues := make(transform.EnumValueMap)
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			if decl.Struct != nil {
+				typeNames[decl.Struct.Name] = true
+			} else if decl.Enum != nil {
+				typeNames[decl.Enum.Name] = true
+				// Extract enum values from the body
+				extractEnumValues(decl.Enum.Body, decl.Enum.Name, moduleName, enumValues)
+			}
+		}
+	}
+
 	// Collect all public and private declarations
 	publicFuncDecls := []string{}
 	privateFuncDecls := []string{}
@@ -31,10 +47,12 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 					privateFuncDecls = append(privateFuncDecls, funcSig)
 				}
 			} else if decl.Struct != nil {
+				// Transform the struct body to qualify type references
+				transformedBody := transformTypeBody(decl.Struct.Body, typeNames, moduleName)
 				typeDecl := &typeDecl{
 					kind:   "struct",
 					name:   decl.Struct.Name,
-					body:   decl.Struct.Body,
+					body:   transformedBody,
 					public: decl.Struct.Public,
 				}
 				if decl.Struct.Public {
@@ -43,10 +61,12 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 					privateTypeDecls = append(privateTypeDecls, typeDecl)
 				}
 			} else if decl.Enum != nil {
+				// Transform enum body to qualify enum values
+				transformedBody := transformEnumBody(decl.Enum.Body, decl.Enum.Name, moduleName)
 				typeDecl := &typeDecl{
 					kind:   "enum",
 					name:   decl.Enum.Name,
-					body:   decl.Enum.Body,
+					body:   transformedBody,
 					public: decl.Enum.Public,
 				}
 				if decl.Enum.Public {
@@ -69,21 +89,27 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 		}
 	}
 
+	// Collect all imports from all files in the module
+	allImports := make(map[string]bool)
+	for _, file := range files {
+		for _, imp := range file.Imports {
+			allImports[imp.Path] = true
+		}
+	}
+
 	// Generate public header
-	if err := generatePublicHeader(mod, publicTypeDecls, publicFuncDecls, buildDir); err != nil {
+	if err := generatePublicHeader(mod, publicTypeDecls, publicFuncDecls, allImports, buildDir); err != nil {
 		return err
 	}
 
-	// Generate internal header (if there are private declarations)
-	if len(privateFuncDecls) > 0 || len(privateTypeDecls) > 0 {
-		if err := generateInternalHeader(mod, privateTypeDecls, privateFuncDecls, buildDir); err != nil {
-			return err
-		}
+	// Generate internal header (always, even if empty - C files include it)
+	if err := generateInternalHeader(mod, privateTypeDecls, privateFuncDecls, buildDir); err != nil {
+		return err
 	}
 
 	// Generate .c files for each source file
 	for i, file := range files {
-		if err := generateCFile(mod, file, mod.Files[i], buildDir); err != nil {
+		if err := generateCFile(mod, file, mod.Files[i], buildDir, enumValues); err != nil {
 			return err
 		}
 	}
@@ -100,7 +126,7 @@ type typeDecl struct {
 }
 
 // generatePublicHeader generates the public .h file for a module
-func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publicFuncs []string, buildDir string) error {
+func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publicFuncs []string, imports map[string]bool, buildDir string) error {
 	moduleName := sanitizeModuleName(mod.ImportPath)
 	guardName := strings.ToUpper(moduleName) + "_H"
 
@@ -109,6 +135,15 @@ func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publ
 	// Include guard
 	sb.WriteString(fmt.Sprintf("#ifndef %s\n", guardName))
 	sb.WriteString(fmt.Sprintf("#define %s\n\n", guardName))
+
+	// Include headers for imported modules (needed for types used in function signatures)
+	for imp := range imports {
+		importName := sanitizeModuleName(imp)
+		sb.WriteString(fmt.Sprintf("#include \"%s.h\"\n", importName))
+	}
+	if len(imports) > 0 {
+		sb.WriteString("\n")
+	}
 
 	// Forward declarations for all structs (to handle dependencies)
 	for _, td := range publicTypes {
@@ -191,7 +226,7 @@ func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, p
 }
 
 // generateCFile generates a .c implementation file
-func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, buildDir string) error {
+func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, buildDir string, enumValues transform.EnumValueMap) error {
 	moduleName := sanitizeModuleName(mod.ImportPath)
 	baseName := filepath.Base(srcPath)
 	baseName = baseName[:len(baseName)-3] // Remove .cm extension
@@ -202,12 +237,23 @@ func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, b
 		return fmt.Errorf("failed to build import map for %s: %w", srcPath, err)
 	}
 
+	// Build C import map for C header access transformation
+	cimportMap, err := transform.BuildCImportMap(file.CImports)
+	if err != nil {
+		return fmt.Errorf("failed to build cimport map for %s: %w", srcPath, err)
+	}
+
 	var sb strings.Builder
 
 	// Include internal header (which includes public header)
 	sb.WriteString(fmt.Sprintf("#include \"%s_internal.h\"\n", moduleName))
 
-	// Include dependency headers
+	// Include C standard library headers (cimports)
+	for _, cimp := range file.CImports {
+		sb.WriteString(fmt.Sprintf("#include <%s>\n", cimp.Path))
+	}
+
+	// Include c_minus dependency headers
 	for _, imp := range file.Imports {
 		importName := sanitizeModuleName(imp.Path)
 		sb.WriteString(fmt.Sprintf("#include \"%s.h\"\n", importName))
@@ -218,7 +264,7 @@ func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, b
 	// Emit function implementations
 	for _, decl := range file.Decls {
 		if decl.Function != nil {
-			funcImpl := generateFunctionImplementation(decl.Function, moduleName, importMap, srcPath)
+			funcImpl := generateFunctionImplementation(decl.Function, moduleName, importMap, cimportMap, enumValues)
 			sb.WriteString(funcImpl)
 			sb.WriteString("\n\n")
 		}
@@ -273,6 +319,7 @@ func generateFunctionSignature(fn *parser.FuncDecl, moduleName string) string {
 
 // mangleTypeInSignature mangles custom type names in function signatures
 // Primitive C types are left unchanged
+// Handles qualified types like "module.Type" -> "module_Type"
 func mangleTypeInSignature(typeName string, moduleName string) string {
 	// Common primitive types - don't mangle these
 	primitives := map[string]bool{
@@ -315,7 +362,17 @@ func mangleTypeInSignature(typeName string, moduleName string) string {
 		return typeName
 	}
 
-	// Custom type - mangle it
+	// Check for qualified type (e.g., "module.Type")
+	if strings.Contains(typeName, ".") {
+		// Split on dot: "ticket.Ticket" -> ["ticket", "Ticket"]
+		dotParts := strings.SplitN(typeName, ".", 2)
+		if len(dotParts) == 2 {
+			// Return qualified module_Type format
+			return dotParts[0] + "_" + dotParts[1]
+		}
+	}
+
+	// Custom type - mangle it with current module prefix
 	return moduleName + "_" + typeName
 }
 
@@ -346,7 +403,7 @@ func generateTypeDeclaration(td *typeDecl, moduleName string) string {
 }
 
 // generateFunctionImplementation generates a complete C function implementation
-func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, importMap transform.ImportMap, srcPath string) string {
+func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, importMap transform.ImportMap, cimportMap transform.CImportMap, enumValues transform.EnumValueMap) string {
 	var sb strings.Builder
 
 	// Add line directive for source mapping
@@ -358,7 +415,8 @@ func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, impo
 	sb.WriteString(" ")
 
 	// Transform function body to replace qualified access with mangled names
-	transformedBody := transform.TransformFunctionBody(fn.Body, importMap)
+	// Also transform C imports (stdio.printf -> printf) and enum values
+	transformedBody := transform.TransformFunctionBodyFull(fn.Body, importMap, cimportMap, enumValues)
 	sb.WriteString(transformedBody)
 
 	return sb.String()
@@ -368,4 +426,120 @@ func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, impo
 func sanitizeModuleName(importPath string) string {
 	// Replace slashes with underscores
 	return strings.ReplaceAll(importPath, "/", "_")
+}
+
+// extractEnumValues extracts enum value names from an enum body and adds them to the map
+// For enum body like "{ TODO, IN_PROGRESS, DONE }", it adds entries like:
+// "TODO" -> "module_EnumName_TODO"
+func extractEnumValues(body, enumName, moduleName string, enumValues transform.EnumValueMap) {
+	// Find the opening and closing braces
+	startBrace := strings.Index(body, "{")
+	endBrace := strings.LastIndex(body, "}")
+	if startBrace == -1 || endBrace == -1 || startBrace >= endBrace {
+		return
+	}
+
+	prefix := moduleName + "_" + enumName + "_"
+	inner := body[startBrace+1 : endBrace]
+
+	// Split on commas and extract each value name
+	values := strings.Split(inner, ",")
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		// Handle values with explicit assignments like "FOO = 1"
+		if eqIdx := strings.Index(v, "="); eqIdx != -1 {
+			v = strings.TrimSpace(v[:eqIdx])
+		}
+		if v != "" {
+			enumValues[v] = prefix + v
+		}
+	}
+}
+
+// transformTypeBody transforms type references within a struct body
+// Qualifies references to module-local types (enums, structs) with the module prefix
+func transformTypeBody(body string, typeNames map[string]bool, moduleName string) string {
+	if len(typeNames) == 0 {
+		return body
+	}
+
+	result := body
+	for typeName := range typeNames {
+		// Look for the type name as a standalone identifier (not part of another identifier)
+		// Match patterns like "Type " or "Type;" at field type positions
+		result = replaceTypeInBody(result, typeName, moduleName+"_"+typeName)
+	}
+	return result
+}
+
+// replaceTypeInBody replaces type references in a struct body with qualified names
+// Handles patterns like "TypeName fieldname;" where TypeName is a type reference
+func replaceTypeInBody(body, typeName, replacement string) string {
+	var result strings.Builder
+	i := 0
+
+	for i < len(body) {
+		// Check if we're at the start of the type name
+		if i+len(typeName) <= len(body) && body[i:i+len(typeName)] == typeName {
+			// Check that this is a standalone identifier:
+			// - character before is not alphanumeric or underscore (or we're at start)
+			// - character after is not alphanumeric or underscore
+			before := i == 0 || !isIdentChar(rune(body[i-1]))
+			after := i+len(typeName) >= len(body) || !isIdentChar(rune(body[i+len(typeName)]))
+
+			if before && after {
+				result.WriteString(replacement)
+				i += len(typeName)
+				continue
+			}
+		}
+		result.WriteByte(body[i])
+		i++
+	}
+
+	return result.String()
+}
+
+// isIdentChar returns true if the character can be part of an identifier
+func isIdentChar(ch rune) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
+}
+
+// transformEnumBody transforms enum values to have the module_EnumName_ prefix
+func transformEnumBody(body, enumName, moduleName string) string {
+	// Parse enum body like "{ TODO, IN_PROGRESS, DONE }"
+	// Transform to "{ module_EnumName_TODO, module_EnumName_IN_PROGRESS, module_EnumName_DONE }"
+
+	// Find the opening and closing braces
+	startBrace := strings.Index(body, "{")
+	endBrace := strings.LastIndex(body, "}")
+	if startBrace == -1 || endBrace == -1 || startBrace >= endBrace {
+		return body
+	}
+
+	prefix := moduleName + "_" + enumName + "_"
+	inner := body[startBrace+1 : endBrace]
+
+	// Split on commas and transform each value
+	values := strings.Split(inner, ",")
+	var transformed []string
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		// Handle values with explicit assignments like "FOO = 1"
+		if eqIdx := strings.Index(v, "="); eqIdx != -1 {
+			name := strings.TrimSpace(v[:eqIdx])
+			rest := v[eqIdx:]
+			transformed = append(transformed, prefix+name+rest)
+		} else {
+			transformed = append(transformed, prefix+v)
+		}
+	}
+
+	return "{\n    " + strings.Join(transformed, ",\n    ") + "\n}"
 }

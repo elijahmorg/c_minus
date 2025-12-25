@@ -1,0 +1,19 @@
+module "main"
+
+cimport "stdio.h"
+
+import "ticket"
+import "cli"
+
+func main() int {
+    ticket.Ticket t;
+    ticket.create_ticket(1, "Title", "Description", &t);
+    
+    stdio.printf("Created ticket with id: %d\n", t.id);
+    
+    int result = cli.process_ticket(&t);
+    
+    stdio.printf("Result: %d\n", result);
+    
+    return result;
+}

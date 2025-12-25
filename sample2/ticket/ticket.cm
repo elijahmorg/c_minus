@@ -1,0 +1,27 @@
+module "ticket"
+
+pub enum Status {
+    TODO,
+    IN_PROGRESS,
+    DONE
+};
+
+pub struct Ticket {
+    int id;
+    char title[100];
+    char description[256];
+    Status status;
+};
+
+pub func create_ticket(int id, char* title, char* description, Ticket* t) void {
+    t->id = id;
+    t->status = TODO;
+}
+
+pub func update_status(Ticket* t, Status new_status) void {
+    t->status = new_status;
+}
+
+pub func get_status(Ticket* t) Status {
+    return t->status;
+}

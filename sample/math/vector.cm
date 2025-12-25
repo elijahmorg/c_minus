@@ -6,7 +6,7 @@ pub struct Vec3 {
     float z;
 };
 
-pub func dot(a Vec3, b Vec3) float {
+pub func dot(Vec3 a, Vec3 b) float {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 

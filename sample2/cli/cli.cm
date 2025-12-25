@@ -1,0 +1,15 @@
+module "cli"
+
+import "ticket"
+import "fileio"
+
+pub func process_ticket(ticket.Ticket* t) int {
+    ticket.update_status(t, ticket.Status.DONE);
+    return fileio.add_numbers(t->id, 100);
+}
+
+pub func calculate(int a, int b) int {
+    int sum = fileio.add_numbers(a, b);
+    int product = fileio.multiply(a, b);
+    return sum + product;
+}

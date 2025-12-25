@@ -8,9 +8,10 @@ import (
 
 // File represents a parsed .cm file
 type File struct {
-	Module  *ModuleDecl
-	Imports []*Import
-	Decls   []*Decl
+	Module   *ModuleDecl
+	Imports  []*Import
+	CImports []*CImport
+	Decls    []*Decl
 }
 
 // ModuleDecl represents a module declaration
@@ -18,9 +19,14 @@ type ModuleDecl struct {
 	Path string
 }
 
-// Import represents an import statement
+// Import represents an import statement for c_minus modules
 type Import struct {
 	Path string
+}
+
+// CImport represents a C header import statement
+type CImport struct {
+	Path string // e.g., "stdio.h"
 }
 
 // Decl represents a top-level declaration (function, type, etc.)
@@ -85,13 +91,14 @@ func ParseFile(path string) (*File, error) {
 // manualParse is a simple manual parser for initial implementation
 func manualParse(source string, path string) (*File, error) {
 	file := &File{
-		Imports: []*Import{},
-		Decls:   []*Decl{},
+		Imports:  []*Import{},
+		CImports: []*CImport{},
+		Decls:    []*Decl{},
 	}
 
 	lines := strings.Split(source, "\n")
 
-	// Phase 1: Extract module and imports
+	// Phase 1: Extract module, imports, and cimports
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
@@ -104,7 +111,15 @@ func manualParse(source string, path string) (*File, error) {
 			}
 		}
 
-		if strings.HasPrefix(line, "import") {
+		// Check for cimport before import (since "import" is a prefix of "cimport" when checking HasPrefix)
+		if strings.HasPrefix(line, "cimport") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				file.CImports = append(file.CImports, &CImport{
+					Path: strings.Trim(parts[1], `"`),
+				})
+			}
+		} else if strings.HasPrefix(line, "import") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				file.Imports = append(file.Imports, &Import{
@@ -224,7 +239,7 @@ func parseFunction(lines []string, startIdx int, fullSource string) (*FuncDecl, 
 	return funcDecl, consumed, nil
 }
 
-// parseParams parses function parameters from string like "a int, b float"
+// parseParams parses function parameters from string like "int a, float b" (C-style)
 func parseParams(paramStr string) []*Param {
 	params := []*Param{}
 
@@ -236,10 +251,15 @@ func parseParams(paramStr string) []*Param {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		fields := strings.Fields(part)
-		if len(fields) == 2 {
+		if len(fields) >= 2 {
+			// C-style: type comes first, name is the last token
+			// This handles cases like "int a", "ticket.Ticket* t", "unsigned int x"
+			name := fields[len(fields)-1]
+			typeParts := fields[:len(fields)-1]
+			paramType := strings.Join(typeParts, " ")
 			params = append(params, &Param{
-				Name: fields[0],
-				Type: fields[1],
+				Name: name,
+				Type: paramType,
 			})
 		}
 	}

@@ -9,7 +9,7 @@ import (
 func TestParseModuleDeclaration(t *testing.T) {
 	source := `module "math"
 
-pub func add(a int, b int) int {
+pub func add(int a, int b) int {
     return a + b;
 }
 `
@@ -72,7 +72,7 @@ func main() int {
 func TestParsePublicFunction(t *testing.T) {
 	source := `module "math"
 
-pub func add(a int, b int) int {
+pub func add(int a, int b) int {
     return a + b;
 }
 `
@@ -162,15 +162,15 @@ func helper() int {
 func TestParseMultipleFunctions(t *testing.T) {
 	source := `module "math"
 
-pub func add(a int, b int) int {
+pub func add(int a, int b) int {
     return a + b;
 }
 
-func subtract(a int, b int) int {
+func subtract(int a, int b) int {
     return a - b;
 }
 
-pub func multiply(a int, b int) int {
+pub func multiply(int a, int b) int {
     return a * b;
 }
 `
@@ -203,5 +203,52 @@ pub func multiply(a int, b int) int {
 	// Check third function
 	if file.Decls[2].Function.Name != "multiply" || !file.Decls[2].Function.Public {
 		t.Error("third function incorrect")
+	}
+}
+
+func TestParseCImports(t *testing.T) {
+	source := `module "main"
+
+cimport "stdio.h"
+cimport "stdlib.h"
+
+import "math"
+
+func main() int {
+    return 0;
+}
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	// Check cimports
+	if len(file.CImports) != 2 {
+		t.Fatalf("expected 2 cimports, got %d", len(file.CImports))
+	}
+
+	if file.CImports[0].Path != "stdio.h" {
+		t.Errorf("expected first cimport 'stdio.h', got '%s'", file.CImports[0].Path)
+	}
+
+	if file.CImports[1].Path != "stdlib.h" {
+		t.Errorf("expected second cimport 'stdlib.h', got '%s'", file.CImports[1].Path)
+	}
+
+	// Check regular imports still work
+	if len(file.Imports) != 1 {
+		t.Fatalf("expected 1 import, got %d", len(file.Imports))
+	}
+
+	if file.Imports[0].Path != "math" {
+		t.Errorf("expected import 'math', got '%s'", file.Imports[0].Path)
 	}
 }

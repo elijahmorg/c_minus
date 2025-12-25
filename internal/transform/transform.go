@@ -42,13 +42,69 @@ func getModulePrefix(modulePath string) string {
 	return parts[len(parts)-1]
 }
 
+// CImportMap maps C header prefixes to their header paths
+// Example: {"stdio": "stdio.h", "stdlib": "stdlib.h"}
+// Used to transform stdio.printf -> printf (strip prefix, no mangling)
+type CImportMap map[string]string
+
+// BuildCImportMap creates a map from header prefix to header path
+// For "stdio.h", the prefix is "stdio"
+func BuildCImportMap(cimports []*parser.CImport) (CImportMap, error) {
+	cimportMap := make(CImportMap)
+
+	for _, cimp := range cimports {
+		// Get prefix by stripping .h extension
+		prefix := getCImportPrefix(cimp.Path)
+
+		// Check for collisions
+		if existing, exists := cimportMap[prefix]; exists {
+			if existing != cimp.Path {
+				return nil, fmt.Errorf("cimport prefix collision: both %q and %q would use prefix %q",
+					existing, cimp.Path, prefix)
+			}
+		}
+
+		cimportMap[prefix] = cimp.Path
+	}
+
+	return cimportMap, nil
+}
+
+// getCImportPrefix extracts the prefix from a C header path
+// Example: "stdio.h" -> "stdio", "sys/types.h" -> "types"
+func getCImportPrefix(headerPath string) string {
+	// Strip .h extension if present
+	name := headerPath
+	if strings.HasSuffix(name, ".h") {
+		name = name[:len(name)-2]
+	}
+	// Use the last segment after any slash (for headers like sys/types.h)
+	parts := strings.Split(name, "/")
+	return parts[len(parts)-1]
+}
+
+// EnumValueMap maps enum value names to their qualified replacement
+// Example: {"TODO": "ticket_Status_TODO", "IN_PROGRESS": "ticket_Status_IN_PROGRESS"}
+type EnumValueMap map[string]string
+
 // TransformFunctionBody transforms qualified symbol access in a function body
 // Converts "module.symbol" to "full_module_path_symbol" using the import map
 func TransformFunctionBody(body string, importMap ImportMap) string {
-	if len(importMap) == 0 {
-		return body
-	}
+	return TransformFunctionBodyFull(body, importMap, nil, nil)
+}
 
+// TransformFunctionBodyWithEnums transforms qualified symbol access and enum values in a function body
+// Converts "module.symbol" to "full_module_path_symbol" using the import map
+// Also transforms bare enum values like "TODO" to "module_EnumName_TODO"
+func TransformFunctionBodyWithEnums(body string, importMap ImportMap, enumValues EnumValueMap) string {
+	return TransformFunctionBodyFull(body, importMap, nil, enumValues)
+}
+
+// TransformFunctionBodyFull transforms qualified symbol access, C imports, and enum values
+// - For c_minus imports: "module.symbol" -> "module_symbol" (mangled)
+// - For C imports: "stdio.printf" -> "printf" (just strip prefix, no mangling)
+// - For enum values: "TODO" -> "module_EnumName_TODO"
+func TransformFunctionBodyFull(body string, importMap ImportMap, cimportMap CImportMap, enumValues EnumValueMap) string {
 	// Tokenize the body
 	tokens := tokenize(body)
 
@@ -63,9 +119,18 @@ func TransformFunctionBody(body string, importMap ImportMap) string {
 		if tok.kind == tokenIdent && i+1 < len(tokens) && tokens[i+1].kind == tokenDot {
 			prefix := tok.value
 
-			// Check if this is an imported module prefix
-			if fullPath, ok := importMap[prefix]; ok {
-				// This is a qualified access - transform it
+			// Check if this is a C import prefix (e.g., stdio.printf -> printf)
+			if _, ok := cimportMap[prefix]; ok {
+				// This is a C import access - just strip the prefix
+				i += 2 // Skip prefix and dot
+
+				// Collect the symbol name (no mangling for C imports)
+				if i < len(tokens) && tokens[i].kind == tokenIdent {
+					result.WriteString(tokens[i].value)
+					i++
+				}
+			} else if fullPath, ok := importMap[prefix]; ok {
+				// This is a c_minus module qualified access - transform with mangling
 				mangledPrefix := strings.ReplaceAll(fullPath, "/", "_")
 
 				// Skip the module prefix and dot
@@ -99,6 +164,14 @@ func TransformFunctionBody(body string, importMap ImportMap) string {
 				result.WriteString(tok.value)
 				i++
 			}
+		} else if tok.kind == tokenIdent {
+			// Check if this is an enum value that needs qualification
+			if replacement, ok := enumValues[tok.value]; ok {
+				result.WriteString(replacement)
+			} else {
+				result.WriteString(tok.value)
+			}
+			i++
 		} else {
 			// Not a qualified access pattern - emit as-is
 			result.WriteString(tok.value)
@@ -143,44 +216,86 @@ func tokenize(body string) []token {
 	}
 
 	inIdent := false
+	i := 0
 
-	for i, ch := range body {
+	for i < len(body) {
+		ch := rune(body[i])
+
 		if ch == '.' {
 			flushIdent()
 			flushOther()
 			tokens = append(tokens, token{kind: tokenDot, value: "."})
 			inIdent = false
+			i++
+		} else if ch == '"' {
+			// String literal - consume the entire string as an "other" token
+			if inIdent {
+				flushIdent()
+				inIdent = false
+			}
+			current.WriteByte(body[i])
+			i++
+			// Consume until closing quote
+			for i < len(body) && body[i] != '"' {
+				if body[i] == '\\' && i+1 < len(body) {
+					// Escape sequence
+					current.WriteByte(body[i])
+					i++
+					if i < len(body) {
+						current.WriteByte(body[i])
+						i++
+					}
+				} else {
+					current.WriteByte(body[i])
+					i++
+				}
+			}
+			// Consume closing quote
+			if i < len(body) {
+				current.WriteByte(body[i])
+				i++
+			}
+		} else if ch == '\'' {
+			// Character literal - consume the entire char literal as an "other" token
+			if inIdent {
+				flushIdent()
+				inIdent = false
+			}
+			current.WriteByte(body[i])
+			i++
+			// Consume until closing quote
+			for i < len(body) && body[i] != '\'' {
+				if body[i] == '\\' && i+1 < len(body) {
+					current.WriteByte(body[i])
+					i++
+					if i < len(body) {
+						current.WriteByte(body[i])
+						i++
+					}
+				} else {
+					current.WriteByte(body[i])
+					i++
+				}
+			}
+			// Consume closing quote
+			if i < len(body) {
+				current.WriteByte(body[i])
+				i++
+			}
 		} else if isIdentStart(ch) || (inIdent && isIdentContinue(ch)) {
 			if !inIdent {
 				flushOther()
 				inIdent = true
 			}
-			current.WriteRune(ch)
+			current.WriteByte(body[i])
+			i++
 		} else {
 			if inIdent {
 				flushIdent()
 				inIdent = false
 			}
-			current.WriteRune(ch)
-
-			// Special handling for string literals and comments to avoid false matches
-			if ch == '"' {
-				// Consume string literal
-				i++
-				for i < len(body) && body[i] != '"' {
-					if body[i] == '\\' && i+1 < len(body) {
-						current.WriteRune(rune(body[i]))
-						i++
-					}
-					if i < len(body) {
-						current.WriteRune(rune(body[i]))
-						i++
-					}
-				}
-				if i < len(body) {
-					current.WriteRune(rune(body[i]))
-				}
-			}
+			current.WriteByte(body[i])
+			i++
 		}
 	}
 
