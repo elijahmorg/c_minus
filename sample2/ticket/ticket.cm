@@ -1,11 +1,14 @@
 module "ticket"
 
+// Status represents the lifecycle state of a ticket.
 pub enum Status {
     TODO,
     IN_PROGRESS,
     DONE
 };
 
+// Ticket represents a single work item in the system.
+// It tracks an ID, title, description, and current status.
 pub struct Ticket {
     int id;
     char title[100];
@@ -13,15 +16,19 @@ pub struct Ticket {
     Status status;
 };
 
+// create_ticket initializes a new ticket with the given ID, title, and description.
+// The ticket starts in the TODO status.
 pub func create_ticket(int id, char* title, char* description, Ticket* t) void {
     t->id = id;
     t->status = TODO;
 }
 
+// update_status changes the status of the given ticket.
 pub func update_status(Ticket* t, Status new_status) void {
     t->status = new_status;
 }
 
+// get_status returns the current status of a ticket.
 pub func get_status(Ticket* t) Status {
     return t->status;
 }

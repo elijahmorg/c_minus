@@ -1,0 +1,14 @@
+module "outer/inner"
+
+// Tests that nested modules (outer/inner) are correctly:
+// - Discovered by project scanner
+// - Mangled to outer_inner prefix
+// - Importable by other modules
+
+pub func get_value() int {
+    return 42;
+}
+
+pub func add(int a, int b) int {
+    return a + b;
+}

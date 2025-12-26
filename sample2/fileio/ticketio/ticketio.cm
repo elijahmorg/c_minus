@@ -1,0 +1,115 @@
+module "fileio/ticketio"
+
+cimport "stdio.h"
+cimport "stdlib.h"
+cimport "string.h"
+
+import "ticket"
+import "fileio"
+
+// write_ticket writes a ticket to the specified file path.
+// Returns 0 on success, -1 on failure.
+pub func write_ticket(char* filepath, ticket.Ticket* t) int {
+    stdio.FILE* fp = stdio.fopen(filepath, "w");
+    if (fp == stdlib.NULL) {
+        return -1;
+    }
+    
+    stdio.fprintf(fp, "%d\n", t->id);
+    stdio.fprintf(fp, "%s\n", t->title);
+    stdio.fprintf(fp, "%s\n", t->description);
+    stdio.fprintf(fp, "%d\n", t->status);
+    
+    stdio.fclose(fp);
+    return 0;
+}
+
+// read_ticket reads a ticket from the specified file path.
+// Returns 0 on success, -1 on failure.
+pub func read_ticket(char* filepath, ticket.Ticket* t) int {
+    stdio.FILE* fp = stdio.fopen(filepath, "r");
+    if (fp == stdlib.NULL) {
+        return -1;
+    }
+    
+    stdio.fscanf(fp, "%d\n", &t->id);
+    stdio.fgets(t->title, 100, fp);
+    stdio.fgets(t->description, 256, fp);
+    
+    int status_val;
+    stdio.fscanf(fp, "%d", &status_val);
+    t->status = status_val;
+    
+    // Remove trailing newlines from fgets
+    int len = string.strlen(t->title);
+    if (len > 0 && t->title[len - 1] == '\n') {
+        t->title[len - 1] = '\0';
+    }
+    len = string.strlen(t->description);
+    if (len > 0 && t->description[len - 1] == '\n') {
+        t->description[len - 1] = '\0';
+    }
+    
+    stdio.fclose(fp);
+    return 0;
+}
+
+// write_tickets writes an array of tickets to the specified file path.
+// Returns 0 on success, -1 on failure.
+pub func write_tickets(char* filepath, ticket.Ticket* tickets, int count) int {
+    stdio.FILE* fp = stdio.fopen(filepath, "w");
+    if (fp == stdlib.NULL) {
+        return -1;
+    }
+    
+    stdio.fprintf(fp, "%d\n", count);
+    
+    for (int i = 0; i < count; i = i + 1) {
+        stdio.fprintf(fp, "%d\n", tickets[i].id);
+        stdio.fprintf(fp, "%s\n", tickets[i].title);
+        stdio.fprintf(fp, "%s\n", tickets[i].description);
+        stdio.fprintf(fp, "%d\n", tickets[i].status);
+    }
+    
+    stdio.fclose(fp);
+    return 0;
+}
+
+// read_tickets reads tickets from a file into the provided array.
+// Returns the number of tickets read, or -1 on failure.
+pub func read_tickets(char* filepath, ticket.Ticket* tickets, int max_count) int {
+    stdio.FILE* fp = stdio.fopen(filepath, "r");
+    if (fp == stdlib.NULL) {
+        return -1;
+    }
+    
+    int count;
+    stdio.fscanf(fp, "%d\n", &count);
+    
+    if (count > max_count) {
+        count = max_count;
+    }
+    
+    for (int i = 0; i < count; i = i + 1) {
+        stdio.fscanf(fp, "%d\n", &tickets[i].id);
+        stdio.fgets(tickets[i].title, 100, fp);
+        stdio.fgets(tickets[i].description, 256, fp);
+        
+        int status_val;
+        stdio.fscanf(fp, "%d\n", &status_val);
+        tickets[i].status = status_val;
+        
+        // Remove trailing newlines
+        int len = string.strlen(tickets[i].title);
+        if (len > 0 && tickets[i].title[len - 1] == '\n') {
+            tickets[i].title[len - 1] = '\0';
+        }
+        len = string.strlen(tickets[i].description);
+        if (len > 0 && tickets[i].description[len - 1] == '\n') {
+            tickets[i].description[len - 1] = '\0';
+        }
+    }
+    
+    stdio.fclose(fp);
+    return count;
+}

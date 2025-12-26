@@ -252,3 +252,179 @@ func main() int {
 		t.Errorf("expected import 'math', got '%s'", file.Imports[0].Path)
 	}
 }
+
+func TestParseDocCommentFunction(t *testing.T) {
+	source := `module "math"
+
+// add returns the sum of two integers.
+pub func add(int a, int b) int {
+    return a + b;
+}
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 1 {
+		t.Fatalf("expected 1 declaration, got %d", len(file.Decls))
+	}
+
+	fn := file.Decls[0].Function
+	if fn == nil {
+		t.Fatal("expected function declaration")
+	}
+
+	if fn.DocComment != "add returns the sum of two integers." {
+		t.Errorf("expected doc comment 'add returns the sum of two integers.', got '%s'", fn.DocComment)
+	}
+}
+
+func TestParseDocCommentMultiLine(t *testing.T) {
+	source := `module "math"
+
+// multiply multiplies two integers.
+// It returns the product as an int.
+pub func multiply(int a, int b) int {
+    return a * b;
+}
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 1 {
+		t.Fatalf("expected 1 declaration, got %d", len(file.Decls))
+	}
+
+	fn := file.Decls[0].Function
+	if fn == nil {
+		t.Fatal("expected function declaration")
+	}
+
+	expected := "multiply multiplies two integers.\nIt returns the product as an int."
+	if fn.DocComment != expected {
+		t.Errorf("expected doc comment %q, got %q", expected, fn.DocComment)
+	}
+}
+
+func TestParseDocCommentWithBlankLine(t *testing.T) {
+	source := `module "math"
+
+// This comment is not a doc comment because there's a blank line.
+
+pub func add(int a, int b) int {
+    return a + b;
+}
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 1 {
+		t.Fatalf("expected 1 declaration, got %d", len(file.Decls))
+	}
+
+	fn := file.Decls[0].Function
+	if fn == nil {
+		t.Fatal("expected function declaration")
+	}
+
+	// Doc comment should be empty because of the blank line
+	if fn.DocComment != "" {
+		t.Errorf("expected empty doc comment, got '%s'", fn.DocComment)
+	}
+}
+
+func TestParseDocCommentStruct(t *testing.T) {
+	source := `module "data"
+
+// Point represents a 2D point.
+pub struct Point {
+    int x;
+    int y;
+};
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 1 {
+		t.Fatalf("expected 1 declaration, got %d", len(file.Decls))
+	}
+
+	s := file.Decls[0].Struct
+	if s == nil {
+		t.Fatal("expected struct declaration")
+	}
+
+	if s.DocComment != "Point represents a 2D point." {
+		t.Errorf("expected doc comment 'Point represents a 2D point.', got '%s'", s.DocComment)
+	}
+}
+
+func TestParseDocCommentEnum(t *testing.T) {
+	source := `module "status"
+
+// Status represents the status of an item.
+pub enum Status {
+    TODO,
+    DONE
+};
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 1 {
+		t.Fatalf("expected 1 declaration, got %d", len(file.Decls))
+	}
+
+	e := file.Decls[0].Enum
+	if e == nil {
+		t.Fatal("expected enum declaration")
+	}
+
+	if e.DocComment != "Status represents the status of an item." {
+		t.Errorf("expected doc comment 'Status represents the status of an item.', got '%s'", e.DocComment)
+	}
+}

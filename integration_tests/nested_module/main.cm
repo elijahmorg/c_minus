@@ -1,0 +1,19 @@
+module "main"
+
+cimport "stdio.h"
+
+import "outer/inner"
+
+func main() int {
+    int val = inner.get_value();
+    int sum = inner.add(10, 20);
+    
+    stdio.printf("Value: %d\n", val);
+    stdio.printf("Sum: %d\n", sum);
+    
+    // Expected output:
+    // Value: 42
+    // Sum: 30
+    
+    return 0;
+}

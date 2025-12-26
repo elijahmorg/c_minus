@@ -7,13 +7,14 @@ import (
 	"strings"
 
 	"github.com/elijahmorgan/c_minus/internal/parser"
+	"github.com/elijahmorgan/c_minus/internal/paths"
 	"github.com/elijahmorgan/c_minus/internal/project"
 	"github.com/elijahmorgan/c_minus/internal/transform"
 )
 
 // GenerateModule generates .h and .c files for a module
 func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir string) error {
-	moduleName := sanitizeModuleName(mod.ImportPath)
+	moduleName := paths.SanitizeModuleName(mod.ImportPath)
 
 	// First pass: collect all type names in this module for later qualification
 	typeNames := make(map[string]bool)
@@ -32,8 +33,8 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 	}
 
 	// Collect all public and private declarations
-	publicFuncDecls := []string{}
-	privateFuncDecls := []string{}
+	publicFuncDecls := []*funcDeclInfo{}
+	privateFuncDecls := []*funcDeclInfo{}
 	publicTypeDecls := []*typeDecl{}
 	privateTypeDecls := []*typeDecl{}
 
@@ -41,19 +42,24 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 		for _, decl := range file.Decls {
 			if decl.Function != nil {
 				funcSig := generateFunctionSignature(decl.Function, moduleName)
+				funcInfo := &funcDeclInfo{
+					signature:  funcSig,
+					docComment: decl.Function.DocComment,
+				}
 				if decl.Function.Public {
-					publicFuncDecls = append(publicFuncDecls, funcSig)
+					publicFuncDecls = append(publicFuncDecls, funcInfo)
 				} else {
-					privateFuncDecls = append(privateFuncDecls, funcSig)
+					privateFuncDecls = append(privateFuncDecls, funcInfo)
 				}
 			} else if decl.Struct != nil {
 				// Transform the struct body to qualify type references
 				transformedBody := transformTypeBody(decl.Struct.Body, typeNames, moduleName)
 				typeDecl := &typeDecl{
-					kind:   "struct",
-					name:   decl.Struct.Name,
-					body:   transformedBody,
-					public: decl.Struct.Public,
+					kind:       "struct",
+					name:       decl.Struct.Name,
+					body:       transformedBody,
+					public:     decl.Struct.Public,
+					docComment: decl.Struct.DocComment,
 				}
 				if decl.Struct.Public {
 					publicTypeDecls = append(publicTypeDecls, typeDecl)
@@ -64,10 +70,11 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 				// Transform enum body to qualify enum values
 				transformedBody := transformEnumBody(decl.Enum.Body, decl.Enum.Name, moduleName)
 				typeDecl := &typeDecl{
-					kind:   "enum",
-					name:   decl.Enum.Name,
-					body:   transformedBody,
-					public: decl.Enum.Public,
+					kind:       "enum",
+					name:       decl.Enum.Name,
+					body:       transformedBody,
+					public:     decl.Enum.Public,
+					docComment: decl.Enum.DocComment,
 				}
 				if decl.Enum.Public {
 					publicTypeDecls = append(publicTypeDecls, typeDecl)
@@ -76,9 +83,10 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 				}
 			} else if decl.Typedef != nil {
 				typeDecl := &typeDecl{
-					kind:   "typedef",
-					body:   decl.Typedef.Body,
-					public: decl.Typedef.Public,
+					kind:       "typedef",
+					body:       decl.Typedef.Body,
+					public:     decl.Typedef.Public,
+					docComment: decl.Typedef.DocComment,
 				}
 				if decl.Typedef.Public {
 					publicTypeDecls = append(publicTypeDecls, typeDecl)
@@ -119,15 +127,22 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 
 // typeDecl represents a type declaration for code generation
 type typeDecl struct {
-	kind   string // "struct", "enum", or "typedef"
-	name   string // type name (for struct/enum)
-	body   string // opaque body content
-	public bool
+	kind       string // "struct", "enum", or "typedef"
+	name       string // type name (for struct/enum)
+	body       string // opaque body content
+	public     bool
+	docComment string // Go-style doc comment
+}
+
+// funcDeclInfo represents a function declaration for code generation
+type funcDeclInfo struct {
+	signature  string // The C function signature
+	docComment string // Go-style doc comment
 }
 
 // generatePublicHeader generates the public .h file for a module
-func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publicFuncs []string, imports map[string]bool, buildDir string) error {
-	moduleName := sanitizeModuleName(mod.ImportPath)
+func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publicFuncs []*funcDeclInfo, imports map[string]bool, buildDir string) error {
+	moduleName := paths.SanitizeModuleName(mod.ImportPath)
 	guardName := strings.ToUpper(moduleName) + "_H"
 
 	var sb strings.Builder
@@ -138,7 +153,7 @@ func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publ
 
 	// Include headers for imported modules (needed for types used in function signatures)
 	for imp := range imports {
-		importName := sanitizeModuleName(imp)
+		importName := paths.SanitizeModuleName(imp)
 		sb.WriteString(fmt.Sprintf("#include \"%s.h\"\n", importName))
 	}
 	if len(imports) > 0 {
@@ -158,16 +173,19 @@ func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publ
 	// Public type declarations
 	for _, td := range publicTypes {
 		sb.WriteString(generateTypeDeclaration(td, moduleName))
-		sb.WriteString("\n")
+		sb.WriteString("\n\n")
 	}
 
 	// Public function declarations
 	for _, decl := range publicFuncs {
-		sb.WriteString(decl)
-		sb.WriteString(";\n")
+		if decl.docComment != "" {
+			sb.WriteString(formatDocComment(decl.docComment))
+		}
+		sb.WriteString(decl.signature)
+		sb.WriteString(";\n\n")
 	}
 
-	sb.WriteString("\n#endif\n")
+	sb.WriteString("#endif\n")
 
 	// Write to file
 	headerPath := filepath.Join(buildDir, moduleName+".h")
@@ -179,8 +197,8 @@ func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publ
 }
 
 // generateInternalHeader generates the internal _internal.h file for a module
-func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, privateFuncs []string, buildDir string) error {
-	moduleName := sanitizeModuleName(mod.ImportPath)
+func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, privateFuncs []*funcDeclInfo, buildDir string) error {
+	moduleName := paths.SanitizeModuleName(mod.ImportPath)
 	guardName := strings.ToUpper(moduleName) + "_INTERNAL_H"
 
 	var sb strings.Builder
@@ -205,16 +223,19 @@ func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, p
 	// Private type declarations
 	for _, td := range privateTypes {
 		sb.WriteString(generateTypeDeclaration(td, moduleName))
-		sb.WriteString("\n")
+		sb.WriteString("\n\n")
 	}
 
 	// Private function declarations
 	for _, decl := range privateFuncs {
-		sb.WriteString(decl)
-		sb.WriteString(";\n")
+		if decl.docComment != "" {
+			sb.WriteString(formatDocComment(decl.docComment))
+		}
+		sb.WriteString(decl.signature)
+		sb.WriteString(";\n\n")
 	}
 
-	sb.WriteString("\n#endif\n")
+	sb.WriteString("#endif\n")
 
 	// Write to file
 	headerPath := filepath.Join(buildDir, moduleName+"_internal.h")
@@ -227,7 +248,7 @@ func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, p
 
 // generateCFile generates a .c implementation file
 func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, buildDir string, enumValues transform.EnumValueMap) error {
-	moduleName := sanitizeModuleName(mod.ImportPath)
+	moduleName := paths.SanitizeModuleName(mod.ImportPath)
 	baseName := filepath.Base(srcPath)
 	baseName = baseName[:len(baseName)-3] // Remove .cm extension
 
@@ -255,7 +276,7 @@ func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, b
 
 	// Include c_minus dependency headers
 	for _, imp := range file.Imports {
-		importName := sanitizeModuleName(imp.Path)
+		importName := paths.SanitizeModuleName(imp.Path)
 		sb.WriteString(fmt.Sprintf("#include \"%s.h\"\n", importName))
 	}
 
@@ -380,6 +401,11 @@ func mangleTypeInSignature(typeName string, moduleName string) string {
 func generateTypeDeclaration(td *typeDecl, moduleName string) string {
 	var sb strings.Builder
 
+	// Add doc comment if present
+	if td.docComment != "" {
+		sb.WriteString(formatDocComment(td.docComment))
+	}
+
 	switch td.kind {
 	case "struct":
 		if td.body == "" {
@@ -420,12 +446,6 @@ func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, impo
 	sb.WriteString(transformedBody)
 
 	return sb.String()
-}
-
-// sanitizeModuleName converts import path to safe filename
-func sanitizeModuleName(importPath string) string {
-	// Replace slashes with underscores
-	return strings.ReplaceAll(importPath, "/", "_")
 }
 
 // extractEnumValues extracts enum value names from an enum body and adds them to the map
@@ -542,4 +562,33 @@ func transformEnumBody(body, enumName, moduleName string) string {
 	}
 
 	return "{\n    " + strings.Join(transformed, ",\n    ") + "\n}"
+}
+
+// formatDocComment formats a doc comment for C output.
+// It converts the internal representation (newline-separated lines)
+// into a C-style comment block.
+func formatDocComment(comment string) string {
+	if comment == "" {
+		return ""
+	}
+
+	lines := strings.Split(comment, "\n")
+	var sb strings.Builder
+
+	// Use C-style block comments for multi-line, // for single-line
+	if len(lines) == 1 {
+		sb.WriteString("// ")
+		sb.WriteString(lines[0])
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("/*\n")
+		for _, line := range lines {
+			sb.WriteString(" * ")
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+		sb.WriteString(" */\n")
+	}
+
+	return sb.String()
 }

@@ -44,6 +44,7 @@ type FuncDecl struct {
 	Name       string
 	Params     []*Param
 	Body       string
+	DocComment string // Go-style doc comment (comments immediately preceding the declaration)
 }
 
 // Param represents a function parameter
@@ -54,25 +55,28 @@ type Param struct {
 
 // StructDecl represents a struct type declaration
 type StructDecl struct {
-	Public bool
-	Name   string
-	Body   string // Opaque body: everything between { and }
-	Semi   bool
+	Public     bool
+	Name       string
+	Body       string // Opaque body: everything between { and }
+	Semi       bool
+	DocComment string // Go-style doc comment (comments immediately preceding the declaration)
 }
 
 // EnumDecl represents an enum type declaration
 type EnumDecl struct {
-	Public bool
-	Name   string
-	Body   string // Opaque body: everything between { and }
-	Semi   bool
+	Public     bool
+	Name       string
+	Body       string // Opaque body: everything between { and }
+	Semi       bool
+	DocComment string // Go-style doc comment (comments immediately preceding the declaration)
 }
 
 // TypedefDecl represents a typedef declaration
 type TypedefDecl struct {
-	Public bool
-	Body   string // Everything from typedef to ;
-	Semi   bool
+	Public     bool
+	Body       string // Everything from typedef to ;
+	Semi       bool
+	DocComment string // Go-style doc comment (comments immediately preceding the declaration)
 }
 
 // Manual parser implementation - no Participle code generation needed
@@ -135,14 +139,27 @@ func manualParse(source string, path string) (*File, error) {
 
 	// Phase 2: Extract declarations (functions and types)
 	i := 0
+	var pendingDocComment []string // Collects consecutive comment lines
 	for i < len(lines) {
 		line := strings.TrimSpace(lines[i])
 
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, "//") {
+		// Handle empty lines - they break doc comment association
+		if line == "" {
+			pendingDocComment = nil // Reset pending doc comments on blank line
 			i++
 			continue
 		}
+
+		// Handle comments - collect them as potential doc comments
+		if strings.HasPrefix(line, "//") {
+			pendingDocComment = append(pendingDocComment, line)
+			i++
+			continue
+		}
+
+		// Get the doc comment string (if any)
+		docComment := buildDocComment(pendingDocComment)
+		pendingDocComment = nil // Reset after use
 
 		// Check for function declaration
 		if strings.Contains(line, "func") {
@@ -150,6 +167,7 @@ func manualParse(source string, path string) (*File, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
 			}
+			funcDecl.DocComment = docComment
 			file.Decls = append(file.Decls, &Decl{Function: funcDecl})
 			i += consumed
 		} else if strings.Contains(line, "struct") {
@@ -157,6 +175,7 @@ func manualParse(source string, path string) (*File, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
 			}
+			structDecl.DocComment = docComment
 			file.Decls = append(file.Decls, &Decl{Struct: structDecl})
 			i += consumed
 		} else if strings.Contains(line, "enum") {
@@ -164,6 +183,7 @@ func manualParse(source string, path string) (*File, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
 			}
+			enumDecl.DocComment = docComment
 			file.Decls = append(file.Decls, &Decl{Enum: enumDecl})
 			i += consumed
 		} else if strings.Contains(line, "typedef") {
@@ -171,6 +191,7 @@ func manualParse(source string, path string) (*File, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
 			}
+			typedefDecl.DocComment = docComment
 			file.Decls = append(file.Decls, &Decl{Typedef: typedefDecl})
 			i += consumed
 		} else {
@@ -455,4 +476,23 @@ func parseTypedef(lines []string, startIdx int) (*TypedefDecl, int, error) {
 	typedefDecl.Semi = true
 
 	return typedefDecl, consumed, nil
+}
+
+// buildDocComment joins collected comment lines into a single doc comment string.
+// It strips the leading "//" from each line and joins them with newlines.
+func buildDocComment(commentLines []string) string {
+	if len(commentLines) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, line := range commentLines {
+		// Strip the "//" prefix and optional single space after it
+		text := strings.TrimPrefix(line, "//")
+		if strings.HasPrefix(text, " ") {
+			text = text[1:]
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "\n")
 }

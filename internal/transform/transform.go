@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	"github.com/elijahmorgan/c_minus/internal/parser"
+	"github.com/elijahmorgan/c_minus/internal/paths"
 )
 
 // ImportMap maps import prefixes to full module paths
@@ -131,7 +132,7 @@ func TransformFunctionBodyFull(body string, importMap ImportMap, cimportMap CImp
 				}
 			} else if fullPath, ok := importMap[prefix]; ok {
 				// This is a c_minus module qualified access - transform with mangling
-				mangledPrefix := strings.ReplaceAll(fullPath, "/", "_")
+				mangledPrefix := paths.SanitizeModuleName(fullPath)
 
 				// Skip the module prefix and dot
 				i += 2
@@ -315,14 +316,12 @@ func isIdentContinue(ch rune) bool {
 
 // MangleTypeName mangles a type name with the module prefix
 func MangleTypeName(typeName string, modulePath string) string {
-	mangledPrefix := strings.ReplaceAll(modulePath, "/", "_")
-	return mangledPrefix + "_" + typeName
+	return paths.SanitizeModuleName(modulePath) + "_" + typeName
 }
 
 // MangleFunctionName mangles a function name with the module prefix
 func MangleFunctionName(funcName string, modulePath string) string {
-	mangledPrefix := strings.ReplaceAll(modulePath, "/", "_")
-	return mangledPrefix + "_" + funcName
+	return paths.SanitizeModuleName(modulePath) + "_" + funcName
 }
 
 // TransformTypeBody transforms type references within a type body

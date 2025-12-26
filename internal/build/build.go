@@ -10,6 +10,7 @@ import (
 
 	"github.com/elijahmorgan/c_minus/internal/codegen"
 	"github.com/elijahmorgan/c_minus/internal/parser"
+	"github.com/elijahmorgan/c_minus/internal/paths"
 	"github.com/elijahmorgan/c_minus/internal/project"
 )
 
@@ -110,12 +111,10 @@ func compileModules(proj *project.Project, buildDir string, jobs int) error {
 
 // needsRecompile checks if module needs recompilation
 func needsRecompile(mod *project.ModuleInfo, buildDir string) bool {
-	moduleName := sanitizeModuleName(mod.ImportPath)
-
 	// Check each .c file against its corresponding .o file
 	for _, srcFile := range mod.Files {
-		cFile := getCFilePath(srcFile, buildDir, moduleName)
-		oFile := cFile[:len(cFile)-2] + ".o"
+		cFile := paths.ModuleCFilePath(buildDir, mod.ImportPath, filepath.Base(srcFile))
+		oFile := paths.ModuleOFilePath(buildDir, mod.ImportPath, filepath.Base(srcFile))
 
 		oInfo, err := os.Stat(oFile)
 		if err != nil {
@@ -135,14 +134,10 @@ func needsRecompile(mod *project.ModuleInfo, buildDir string) bool {
 // compileModule compiles all .c files for a module
 // Each .c file is compiled to a .o file, which are collected for linking
 func compileModule(mod *project.ModuleInfo, buildDir string) error {
-	moduleName := sanitizeModuleName(mod.ImportPath)
-
 	// Compile each .c file to its own .o file
 	for _, srcFile := range mod.Files {
-		cFile := getCFilePath(srcFile, buildDir, moduleName)
-
-		// Output .o file (same name as .c but with .o extension)
-		oFile := cFile[:len(cFile)-2] + ".o"
+		cFile := paths.ModuleCFilePath(buildDir, mod.ImportPath, filepath.Base(srcFile))
+		oFile := paths.ModuleOFilePath(buildDir, mod.ImportPath, filepath.Base(srcFile))
 
 		// Build gcc command for this single file
 		args := []string{"-c", cFile, "-o", oFile, "-I", buildDir}
@@ -169,10 +164,8 @@ func linkBinary(proj *project.Project, buildDir string, outputPath string) error
 	// Collect all .o files from all source files in all modules
 	oFiles := []string{}
 	for _, mod := range proj.Modules {
-		moduleName := sanitizeModuleName(mod.ImportPath)
 		for _, srcFile := range mod.Files {
-			cFile := getCFilePath(srcFile, buildDir, moduleName)
-			oFile := cFile[:len(cFile)-2] + ".o"
+			oFile := paths.ModuleOFilePath(buildDir, mod.ImportPath, filepath.Base(srcFile))
 			oFiles = append(oFiles, oFile)
 		}
 	}
@@ -202,10 +195,8 @@ func needsRelink(proj *project.Project, buildDir string, outputPath string) bool
 
 	// Check if any .o file is newer than binary
 	for _, mod := range proj.Modules {
-		moduleName := sanitizeModuleName(mod.ImportPath)
 		for _, srcFile := range mod.Files {
-			cFile := getCFilePath(srcFile, buildDir, moduleName)
-			oFile := cFile[:len(cFile)-2] + ".o"
+			oFile := paths.ModuleOFilePath(buildDir, mod.ImportPath, filepath.Base(srcFile))
 			oInfo, err := os.Stat(oFile)
 			if err != nil || oInfo.ModTime().After(binInfo.ModTime()) {
 				return true
@@ -214,25 +205,6 @@ func needsRelink(proj *project.Project, buildDir string, outputPath string) bool
 	}
 
 	return false
-}
-
-// getCFilePath gets the .c file path for a source .cm file
-func getCFilePath(srcFile string, buildDir string, moduleName string) string {
-	base := filepath.Base(srcFile)
-	name := base[:len(base)-3] // Remove .cm
-	// Match codegen naming: module_file.c
-	return filepath.Join(buildDir, moduleName+"_"+name+".c")
-}
-
-// sanitizeModuleName converts import path to safe filename
-func sanitizeModuleName(importPath string) string {
-	// Replace slashes with underscores
-	return filepath.ToSlash(importPath)
-}
-
-// Modified getCFilePath to match codegen naming
-func getModuleOFile(mod *project.ModuleInfo, buildDir string) string {
-	return filepath.Join(buildDir, sanitizeModuleName(mod.ImportPath)+".o")
 }
 
 // Helper to check file modification time

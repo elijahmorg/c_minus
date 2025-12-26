@@ -1,11 +1,13 @@
 module "math"
 
+// Vec3 represents a 3D vector with x, y, and z components.
 pub struct Vec3 {
     float x;
     float y;
     float z;
 };
 
+// dot computes the dot product of two 3D vectors.
 pub func dot(Vec3 a, Vec3 b) float {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }

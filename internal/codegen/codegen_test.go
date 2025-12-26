@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/elijahmorgan/c_minus/internal/parser"
+	"github.com/elijahmorgan/c_minus/internal/paths"
 	"github.com/elijahmorgan/c_minus/internal/project"
 	"github.com/elijahmorgan/c_minus/internal/transform"
 )
@@ -19,9 +20,9 @@ func TestGeneratePublicHeader(t *testing.T) {
 	}
 
 	publicTypes := []*typeDecl{}
-	publicFuncs := []string{
-		"int math_add(int a, int b)",
-		"int math_multiply(int a, int b)",
+	publicFuncs := []*funcDeclInfo{
+		{signature: "int math_add(int a, int b)"},
+		{signature: "int math_multiply(int a, int b)"},
 	}
 
 	imports := make(map[string]bool)
@@ -67,8 +68,8 @@ func TestGenerateInternalHeader(t *testing.T) {
 	}
 
 	privateTypes := []*typeDecl{}
-	privateFuncs := []string{
-		"int math_helper(int x)",
+	privateFuncs := []*funcDeclInfo{
+		{signature: "int math_helper(int x)"},
 	}
 
 	err := generateInternalHeader(mod, privateTypes, privateFuncs, tmpDir)
@@ -234,9 +235,100 @@ func TestSanitizeModuleName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := sanitizeModuleName(tt.input)
+		result := paths.SanitizeModuleName(tt.input)
 		if result != tt.expected {
-			t.Errorf("sanitizeModuleName(%q) = %q, expected %q", tt.input, result, tt.expected)
+			t.Errorf("SanitizeModuleName(%q) = %q, expected %q", tt.input, result, tt.expected)
 		}
+	}
+}
+
+func TestFormatDocComment(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty comment",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "single line comment",
+			input:    "This is a comment.",
+			expected: "// This is a comment.\n",
+		},
+		{
+			name:     "multi line comment",
+			input:    "Line one.\nLine two.",
+			expected: "/*\n * Line one.\n * Line two.\n */\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatDocComment(tt.input)
+			if result != tt.expected {
+				t.Errorf("formatDocComment(%q) = %q, expected %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGeneratePublicHeaderWithDocComments(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mod := &project.ModuleInfo{
+		ImportPath: "math",
+	}
+
+	publicTypes := []*typeDecl{
+		{
+			kind:       "struct",
+			name:       "Point",
+			body:       "{\n    int x;\n    int y;\n}",
+			public:     true,
+			docComment: "Point represents a 2D point.",
+		},
+	}
+	publicFuncs := []*funcDeclInfo{
+		{
+			signature:  "int math_add(int a, int b)",
+			docComment: "add returns the sum of two integers.",
+		},
+		{
+			signature:  "int math_multiply(int a, int b)",
+			docComment: "multiply multiplies two integers.\nReturns the product.",
+		},
+	}
+
+	imports := make(map[string]bool)
+	err := generatePublicHeader(mod, publicTypes, publicFuncs, imports, tmpDir)
+	if err != nil {
+		t.Fatalf("generatePublicHeader failed: %v", err)
+	}
+
+	// Read generated file
+	headerPath := filepath.Join(tmpDir, "math.h")
+	content, err := os.ReadFile(headerPath)
+	if err != nil {
+		t.Fatalf("failed to read generated header: %v", err)
+	}
+
+	contentStr := string(content)
+
+	// Check single-line doc comment for struct
+	if !strings.Contains(contentStr, "// Point represents a 2D point.") {
+		t.Error("missing struct doc comment")
+	}
+
+	// Check single-line doc comment for function
+	if !strings.Contains(contentStr, "// add returns the sum of two integers.") {
+		t.Error("missing single-line function doc comment")
+	}
+
+	// Check multi-line doc comment for function (block style)
+	if !strings.Contains(contentStr, "/*\n * multiply multiplies two integers.") {
+		t.Error("missing multi-line function doc comment")
 	}
 }
