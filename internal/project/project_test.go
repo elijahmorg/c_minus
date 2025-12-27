@@ -3,6 +3,7 @@ package project
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -221,5 +222,128 @@ func TestDetectNoCycles(t *testing.T) {
 	// Should not detect cycle
 	if err := detectCycles(proj); err != nil {
 		t.Errorf("unexpected cycle error: %v", err)
+	}
+}
+
+func TestBuildTagMatching(t *testing.T) {
+	tests := []struct {
+		name        string
+		tags        [][]string
+		ctx         *BuildContext
+		shouldMatch bool
+	}{
+		{
+			name:        "no tags matches everything",
+			tags:        nil,
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64"},
+			shouldMatch: true,
+		},
+		{
+			name:        "single OS tag match",
+			tags:        [][]string{{"linux"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64"},
+			shouldMatch: true,
+		},
+		{
+			name:        "single OS tag no match",
+			tags:        [][]string{{"windows"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64"},
+			shouldMatch: false,
+		},
+		{
+			name:        "OR tags - first matches",
+			tags:        [][]string{{"linux", "darwin"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64"},
+			shouldMatch: true,
+		},
+		{
+			name:        "OR tags - second matches",
+			tags:        [][]string{{"linux", "darwin"}},
+			ctx:         &BuildContext{OS: "darwin", Arch: "amd64"},
+			shouldMatch: true,
+		},
+		{
+			name:        "OR tags - none match",
+			tags:        [][]string{{"linux", "darwin"}},
+			ctx:         &BuildContext{OS: "windows", Arch: "amd64"},
+			shouldMatch: false,
+		},
+		{
+			name:        "AND tags - both match",
+			tags:        [][]string{{"linux"}, {"amd64"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64"},
+			shouldMatch: true,
+		},
+		{
+			name:        "AND tags - first doesn't match",
+			tags:        [][]string{{"windows"}, {"amd64"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64"},
+			shouldMatch: false,
+		},
+		{
+			name:        "negation - not windows on linux",
+			tags:        [][]string{{"!windows"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64"},
+			shouldMatch: true,
+		},
+		{
+			name:        "negation - not windows on windows",
+			tags:        [][]string{{"!windows"}},
+			ctx:         &BuildContext{OS: "windows", Arch: "amd64"},
+			shouldMatch: false,
+		},
+		{
+			name:        "custom tag match",
+			tags:        [][]string{{"feature_x"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64", Tags: map[string]bool{"feature_x": true}},
+			shouldMatch: true,
+		},
+		{
+			name:        "custom tag no match",
+			tags:        [][]string{{"feature_x"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64", Tags: map[string]bool{}},
+			shouldMatch: false,
+		},
+		{
+			name:        "release mode match",
+			tags:        [][]string{{"release"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64", Release: true},
+			shouldMatch: true,
+		},
+		{
+			name:        "debug mode match",
+			tags:        [][]string{{"debug"}},
+			ctx:         &BuildContext{OS: "linux", Arch: "amd64", Release: false},
+			shouldMatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := matchesBuildTags(tt.tags, tt.ctx)
+			if result != tt.shouldMatch {
+				t.Errorf("expected %v, got %v", tt.shouldMatch, result)
+			}
+		})
+	}
+}
+
+func TestDefaultBuildContext(t *testing.T) {
+	ctx := DefaultBuildContext()
+
+	if ctx.OS != runtime.GOOS {
+		t.Errorf("expected OS %s, got %s", runtime.GOOS, ctx.OS)
+	}
+
+	if ctx.Arch != runtime.GOARCH {
+		t.Errorf("expected Arch %s, got %s", runtime.GOARCH, ctx.Arch)
+	}
+
+	if ctx.Release {
+		t.Error("expected Release to be false by default")
+	}
+
+	if ctx.Tags == nil {
+		t.Error("expected Tags to be initialized")
 	}
 }

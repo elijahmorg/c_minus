@@ -963,3 +963,388 @@ func main() int {
 		t.Errorf("unexpected output, expected 'Hello World, number 42', got: %s", runOutput)
 	}
 }
+
+// TestBuildTags tests build tag filtering for conditional compilation
+func TestBuildTags(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create cm.mod
+	modFile := filepath.Join(tmpDir, "cm.mod")
+	if err := os.WriteFile(modFile, []byte(`module "test/buildtags"`), 0644); err != nil {
+		t.Fatalf("failed to create cm.mod: %v", err)
+	}
+
+	// Create platform module directory
+	platformDir := filepath.Join(tmpDir, "platform")
+	if err := os.MkdirAll(platformDir, 0755); err != nil {
+		t.Fatalf("failed to create platform dir: %v", err)
+	}
+
+	// Create platform/platform.cm - common code (no build tags)
+	platformCM := `module "platform"
+
+cimport "stdio.h"
+
+pub func print_name() void {
+    stdio.printf("Platform: common\n");
+}
+`
+	if err := os.WriteFile(filepath.Join(platformDir, "platform.cm"), []byte(platformCM), 0644); err != nil {
+		t.Fatalf("failed to create platform.cm: %v", err)
+	}
+
+	// Create platform/platform_feature.cm - only included when "feature_x" tag is set
+	featureCM := `// +build feature_x
+
+module "platform"
+
+cimport "stdio.h"
+
+pub func feature_func() void {
+    stdio.printf("Feature X enabled\n");
+}
+`
+	if err := os.WriteFile(filepath.Join(platformDir, "platform_feature.cm"), []byte(featureCM), 0644); err != nil {
+		t.Fatalf("failed to create platform_feature.cm: %v", err)
+	}
+
+	// Create platform/platform_experimental.cm - only included when "experimental" tag is set
+	experimentalCM := `// +build experimental
+
+module "platform"
+
+cimport "stdio.h"
+
+pub func experimental_func() void {
+    stdio.printf("Experimental mode\n");
+}
+`
+	if err := os.WriteFile(filepath.Join(platformDir, "platform_experimental.cm"), []byte(experimentalCM), 0644); err != nil {
+		t.Fatalf("failed to create platform_experimental.cm: %v", err)
+	}
+
+	// Create main.cm that uses only the common function (works without tags)
+	mainCM := `module "main"
+
+import "platform"
+
+func main() int {
+    platform.print_name();
+    return 0;
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainCM), 0644); err != nil {
+		t.Fatalf("failed to create main.cm: %v", err)
+	}
+
+	// Find c_minus binary
+	cMinusBinary := findCMinusBinary(t)
+
+	// Test 1: Build without tags - should only include common file
+	cmd := exec.Command(cMinusBinary, "build")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build (no tags) failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify only platform.h exists and doesn't have feature_func
+	buildDir := filepath.Join(tmpDir, ".c_minus")
+	platformH, err := os.ReadFile(filepath.Join(buildDir, "platform.h"))
+	if err != nil {
+		t.Fatalf("failed to read platform.h: %v", err)
+	}
+	platformHContent := string(platformH)
+
+	if !contains(platformHContent, "void platform_print_name()") {
+		t.Errorf("platform.h missing print_name, got:\n%s", platformHContent)
+	}
+	if contains(platformHContent, "feature_func") {
+		t.Error("platform.h should NOT contain feature_func when built without -tags")
+	}
+	if contains(platformHContent, "experimental_func") {
+		t.Error("platform.h should NOT contain experimental_func when built without -tags")
+	}
+
+	// Run the binary
+	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
+	runCmd := exec.Command(binaryPath)
+	runOutput, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+	}
+
+	if !contains(string(runOutput), "Platform: common") {
+		t.Errorf("unexpected output, expected 'Platform: common', got: %s", runOutput)
+	}
+
+	// Clean build directory for next test
+	os.RemoveAll(buildDir)
+	os.Remove(binaryPath)
+
+	// Test 2: Build with feature_x tag - should include feature file
+	// Update main.cm to call feature_func
+	mainWithFeature := `module "main"
+
+import "platform"
+
+func main() int {
+    platform.print_name();
+    platform.feature_func();
+    return 0;
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainWithFeature), 0644); err != nil {
+		t.Fatalf("failed to update main.cm: %v", err)
+	}
+
+	cmd = exec.Command(cMinusBinary, "build", "-tags", "feature_x")
+	cmd.Dir = tmpDir
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build (with feature_x tag) failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify platform.h now has feature_func
+	platformH, err = os.ReadFile(filepath.Join(buildDir, "platform.h"))
+	if err != nil {
+		t.Fatalf("failed to read platform.h: %v", err)
+	}
+	platformHContent = string(platformH)
+
+	if !contains(platformHContent, "void platform_feature_func()") {
+		t.Errorf("platform.h should contain feature_func when built with -tags feature_x, got:\n%s", platformHContent)
+	}
+	if contains(platformHContent, "experimental_func") {
+		t.Error("platform.h should NOT contain experimental_func when built with only feature_x tag")
+	}
+
+	// Run the binary
+	runCmd = exec.Command(binaryPath)
+	runOutput, err = runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+	}
+
+	if !contains(string(runOutput), "Platform: common") {
+		t.Errorf("unexpected output, expected 'Platform: common', got: %s", runOutput)
+	}
+	if !contains(string(runOutput), "Feature X enabled") {
+		t.Errorf("unexpected output, expected 'Feature X enabled', got: %s", runOutput)
+	}
+
+	// Clean build directory for next test
+	os.RemoveAll(buildDir)
+	os.Remove(binaryPath)
+
+	// Test 3: Build with multiple tags
+	mainWithBoth := `module "main"
+
+import "platform"
+
+func main() int {
+    platform.print_name();
+    platform.feature_func();
+    platform.experimental_func();
+    return 0;
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainWithBoth), 0644); err != nil {
+		t.Fatalf("failed to update main.cm: %v", err)
+	}
+
+	cmd = exec.Command(cMinusBinary, "build", "-tags", "feature_x,experimental")
+	cmd.Dir = tmpDir
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build (with multiple tags) failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify platform.h has both functions
+	platformH, err = os.ReadFile(filepath.Join(buildDir, "platform.h"))
+	if err != nil {
+		t.Fatalf("failed to read platform.h: %v", err)
+	}
+	platformHContent = string(platformH)
+
+	if !contains(platformHContent, "void platform_feature_func()") {
+		t.Errorf("platform.h should contain feature_func, got:\n%s", platformHContent)
+	}
+	if !contains(platformHContent, "void platform_experimental_func()") {
+		t.Errorf("platform.h should contain experimental_func, got:\n%s", platformHContent)
+	}
+
+	// Run the binary
+	runCmd = exec.Command(binaryPath)
+	runOutput, err = runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+	}
+
+	if !contains(string(runOutput), "Platform: common") {
+		t.Errorf("unexpected output, expected 'Platform: common', got: %s", runOutput)
+	}
+	if !contains(string(runOutput), "Feature X enabled") {
+		t.Errorf("unexpected output, expected 'Feature X enabled', got: %s", runOutput)
+	}
+	if !contains(string(runOutput), "Experimental mode") {
+		t.Errorf("unexpected output, expected 'Experimental mode', got: %s", runOutput)
+	}
+}
+
+// TestCGoFlags tests #cgo CFLAGS and LDFLAGS directives
+func TestCGoFlags(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create cm.mod
+	modFile := filepath.Join(tmpDir, "cm.mod")
+	if err := os.WriteFile(modFile, []byte(`module "test/cgoflags"`), 0644); err != nil {
+		t.Fatalf("failed to create cm.mod: %v", err)
+	}
+
+	// Create mathlib module directory
+	mathlibDir := filepath.Join(tmpDir, "mathlib")
+	if err := os.MkdirAll(mathlibDir, 0755); err != nil {
+		t.Fatalf("failed to create mathlib dir: %v", err)
+	}
+
+	// Create mathlib/mathlib.cm with #cgo LDFLAGS for math library
+	mathlibCM := `module "mathlib"
+
+#cgo LDFLAGS: -lm
+
+cimport "math.h"
+cimport "stdio.h"
+
+pub func compute_sqrt(double x) double {
+    return math.sqrt(x);
+}
+
+pub func print_result(double x) void {
+    stdio.printf("sqrt(%.1f) = %.2f\n", x, math.sqrt(x));
+}
+`
+	if err := os.WriteFile(filepath.Join(mathlibDir, "mathlib.cm"), []byte(mathlibCM), 0644); err != nil {
+		t.Fatalf("failed to create mathlib.cm: %v", err)
+	}
+
+	// Create main.cm
+	mainCM := `module "main"
+
+import "mathlib"
+
+cimport "stdio.h"
+
+func main() int {
+    double result = mathlib.compute_sqrt(16.0);
+    stdio.printf("Result: %.1f\n", result);
+    mathlib.print_result(25.0);
+    return 0;
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainCM), 0644); err != nil {
+		t.Fatalf("failed to create main.cm: %v", err)
+	}
+
+	// Find c_minus binary
+	cMinusBinary := findCMinusBinary(t)
+
+	// Run c_minus build
+	cmd := exec.Command(cMinusBinary, "build")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build failed: %v\nOutput: %s", err, output)
+	}
+
+	// Run the binary and verify output
+	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
+	runCmd := exec.Command(binaryPath)
+	runOutput, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+	}
+
+	outputStr := string(runOutput)
+	if !contains(outputStr, "Result: 4.0") {
+		t.Errorf("unexpected output, expected 'Result: 4.0', got: %s", outputStr)
+	}
+	if !contains(outputStr, "sqrt(25.0) = 5.00") {
+		t.Errorf("unexpected output, expected 'sqrt(25.0) = 5.00', got: %s", outputStr)
+	}
+}
+
+// TestCGoFlagsPlatformSpecific tests platform-specific #cgo directives
+func TestCGoFlagsPlatformSpecific(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create cm.mod
+	modFile := filepath.Join(tmpDir, "cm.mod")
+	if err := os.WriteFile(modFile, []byte(`module "test/platform_cgo"`), 0644); err != nil {
+		t.Fatalf("failed to create cm.mod: %v", err)
+	}
+
+	// Create lib module directory
+	libDir := filepath.Join(tmpDir, "lib")
+	if err := os.MkdirAll(libDir, 0755); err != nil {
+		t.Fatalf("failed to create lib dir: %v", err)
+	}
+
+	// Create lib/lib.cm with platform-specific flags
+	// Only the darwin flag should be used on macOS
+	libCM := `module "lib"
+
+#cgo LDFLAGS: -lm
+#cgo darwin LDFLAGS: -lc
+#cgo linux LDFLAGS: -lpthread
+
+cimport "math.h"
+
+pub func get_pi() double {
+    return 3.14159;
+}
+`
+	if err := os.WriteFile(filepath.Join(libDir, "lib.cm"), []byte(libCM), 0644); err != nil {
+		t.Fatalf("failed to create lib.cm: %v", err)
+	}
+
+	// Create main.cm
+	mainCM := `module "main"
+
+import "lib"
+
+cimport "stdio.h"
+
+func main() int {
+    double pi = lib.get_pi();
+    stdio.printf("PI = %.5f\n", pi);
+    return 0;
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainCM), 0644); err != nil {
+		t.Fatalf("failed to create main.cm: %v", err)
+	}
+
+	// Find c_minus binary
+	cMinusBinary := findCMinusBinary(t)
+
+	// Run c_minus build - should succeed and use only platform-appropriate flags
+	cmd := exec.Command(cMinusBinary, "build")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build failed: %v\nOutput: %s", err, output)
+	}
+
+	// Run the binary
+	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
+	runCmd := exec.Command(binaryPath)
+	runOutput, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+	}
+
+	if !contains(string(runOutput), "PI = 3.14159") {
+		t.Errorf("unexpected output, expected 'PI = 3.14159', got: %s", runOutput)
+	}
+}

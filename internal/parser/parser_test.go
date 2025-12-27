@@ -545,6 +545,88 @@ func containsHelper(s, substr string) bool {
 	return false
 }
 
+func TestParseBuildTags(t *testing.T) {
+	source := `// +build linux darwin
+// +build amd64
+
+module "platform"
+
+pub func get_page_size() int {
+    return 4096;
+}
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	// Should have 2 build tag groups
+	if len(file.BuildTags) != 2 {
+		t.Fatalf("expected 2 build tag groups, got %d", len(file.BuildTags))
+	}
+
+	// First group: linux, darwin (OR)
+	if len(file.BuildTags[0]) != 2 {
+		t.Fatalf("expected 2 tags in first group, got %d", len(file.BuildTags[0]))
+	}
+	if file.BuildTags[0][0] != "linux" {
+		t.Errorf("expected first tag 'linux', got '%s'", file.BuildTags[0][0])
+	}
+	if file.BuildTags[0][1] != "darwin" {
+		t.Errorf("expected second tag 'darwin', got '%s'", file.BuildTags[0][1])
+	}
+
+	// Second group: amd64
+	if len(file.BuildTags[1]) != 1 {
+		t.Fatalf("expected 1 tag in second group, got %d", len(file.BuildTags[1]))
+	}
+	if file.BuildTags[1][0] != "amd64" {
+		t.Errorf("expected tag 'amd64', got '%s'", file.BuildTags[1][0])
+	}
+}
+
+func TestParseBuildTagNegation(t *testing.T) {
+	source := `// +build !windows
+
+module "unix"
+
+pub func get_null_device() char* {
+    return "/dev/null";
+}
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	// Should have 1 build tag group
+	if len(file.BuildTags) != 1 {
+		t.Fatalf("expected 1 build tag group, got %d", len(file.BuildTags))
+	}
+
+	// First group: !windows
+	if len(file.BuildTags[0]) != 1 {
+		t.Fatalf("expected 1 tag in group, got %d", len(file.BuildTags[0]))
+	}
+	if file.BuildTags[0][0] != "!windows" {
+		t.Errorf("expected tag '!windows', got '%s'", file.BuildTags[0][0])
+	}
+}
+
 func TestParseDefineConstant(t *testing.T) {
 	source := `module "fileio"
 
@@ -773,5 +855,84 @@ pub const char* version = "1.0.0";
 	}
 	if g4.Value != `"1.0.0"` {
 		t.Errorf("expected value '\"1.0.0\"', got '%s'", g4.Value)
+	}
+}
+
+func TestParseCGoDirectives(t *testing.T) {
+	source := `module "http"
+
+#cgo CFLAGS: -I/usr/local/include/curl
+#cgo LDFLAGS: -lcurl
+#cgo linux LDFLAGS: -lpthread
+#cgo darwin LDFLAGS: -framework Security
+
+cimport "curl/curl.h"
+
+pub func fetch(char* url) int {
+    return 0;
+}
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.CGoFlags) != 4 {
+		t.Fatalf("expected 4 #cgo directives, got %d", len(file.CGoFlags))
+	}
+
+	// Check first: CFLAGS without platform
+	f1 := file.CGoFlags[0]
+	if f1.Platform != "" {
+		t.Errorf("expected empty platform for first directive, got '%s'", f1.Platform)
+	}
+	if f1.Type != "CFLAGS" {
+		t.Errorf("expected type 'CFLAGS', got '%s'", f1.Type)
+	}
+	if f1.Flags != "-I/usr/local/include/curl" {
+		t.Errorf("expected flags '-I/usr/local/include/curl', got '%s'", f1.Flags)
+	}
+
+	// Check second: LDFLAGS without platform
+	f2 := file.CGoFlags[1]
+	if f2.Platform != "" {
+		t.Errorf("expected empty platform for second directive, got '%s'", f2.Platform)
+	}
+	if f2.Type != "LDFLAGS" {
+		t.Errorf("expected type 'LDFLAGS', got '%s'", f2.Type)
+	}
+	if f2.Flags != "-lcurl" {
+		t.Errorf("expected flags '-lcurl', got '%s'", f2.Flags)
+	}
+
+	// Check third: linux LDFLAGS
+	f3 := file.CGoFlags[2]
+	if f3.Platform != "linux" {
+		t.Errorf("expected platform 'linux', got '%s'", f3.Platform)
+	}
+	if f3.Type != "LDFLAGS" {
+		t.Errorf("expected type 'LDFLAGS', got '%s'", f3.Type)
+	}
+	if f3.Flags != "-lpthread" {
+		t.Errorf("expected flags '-lpthread', got '%s'", f3.Flags)
+	}
+
+	// Check fourth: darwin LDFLAGS
+	f4 := file.CGoFlags[3]
+	if f4.Platform != "darwin" {
+		t.Errorf("expected platform 'darwin', got '%s'", f4.Platform)
+	}
+	if f4.Type != "LDFLAGS" {
+		t.Errorf("expected type 'LDFLAGS', got '%s'", f4.Type)
+	}
+	if f4.Flags != "-framework Security" {
+		t.Errorf("expected flags '-framework Security', got '%s'", f4.Flags)
 	}
 }

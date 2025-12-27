@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +22,12 @@ type Options struct {
 	OutputPath string // Output binary path (empty = default)
 }
 
+// FileFlags stores per-file compiler flags
+type FileFlags struct {
+	CFlags  []string // CFLAGS for this file
+	LDFlags []string // LDFLAGS from this file (aggregated for linking)
+}
+
 // Build orchestrates the entire build process
 func Build(proj *project.Project, opts Options) error {
 	// Create .c_minus directory for intermediate files
@@ -28,13 +36,14 @@ func Build(proj *project.Project, opts Options) error {
 		return fmt.Errorf("failed to create .c_minus directory: %w", err)
 	}
 
-	// Transpile all modules
-	if err := transpileModules(proj, buildDir); err != nil {
+	// Transpile all modules and collect flags
+	fileFlags, err := transpileModules(proj, buildDir)
+	if err != nil {
 		return fmt.Errorf("transpilation failed: %w", err)
 	}
 
 	// Compile .c files to .o files (parallel)
-	if err := compileModules(proj, buildDir, opts.Jobs); err != nil {
+	if err := compileModules(proj, buildDir, opts.Jobs, fileFlags); err != nil {
 		return fmt.Errorf("compilation failed: %w", err)
 	}
 
@@ -45,37 +54,127 @@ func Build(proj *project.Project, opts Options) error {
 		outputPath = filepath.Join(proj.RootPath, filepath.Base(proj.RootPath))
 	}
 
-	if err := linkBinary(proj, buildDir, outputPath); err != nil {
+	// Collect all LDFLAGS
+	allLDFlags := collectLDFlags(fileFlags)
+
+	if err := linkBinary(proj, buildDir, outputPath, allLDFlags); err != nil {
 		return fmt.Errorf("linking failed: %w", err)
 	}
 
 	return nil
 }
 
-// transpileModules converts all .cm files to .h/.c files
-func transpileModules(proj *project.Project, buildDir string) error {
+// transpileModules converts all .cm files to .h/.c files and returns per-file flags
+func transpileModules(proj *project.Project, buildDir string) (map[string]*FileFlags, error) {
+	fileFlags := make(map[string]*FileFlags)
+
 	for _, mod := range proj.Modules {
 		// Parse all files in this module
 		parsedFiles := make([]*parser.File, 0, len(mod.Files))
 		for _, filePath := range mod.Files {
 			file, err := parser.ParseFile(filePath)
 			if err != nil {
-				return fmt.Errorf("failed to parse %s: %w", filePath, err)
+				return nil, fmt.Errorf("failed to parse %s: %w", filePath, err)
 			}
 			parsedFiles = append(parsedFiles, file)
+
+			// Extract and filter CGo flags for this file
+			flags := extractFileFlags(file.CGoFlags)
+			cFilePath := paths.ModuleCFilePath(buildDir, mod.ImportPath, filepath.Base(filePath))
+			fileFlags[cFilePath] = flags
 		}
 
 		// Generate code for this module
 		if err := codegen.GenerateModule(mod, parsedFiles, buildDir); err != nil {
-			return fmt.Errorf("failed to generate code for module %s: %w", mod.ImportPath, err)
+			return nil, fmt.Errorf("failed to generate code for module %s: %w", mod.ImportPath, err)
 		}
 	}
 
-	return nil
+	return fileFlags, nil
+}
+
+// extractFileFlags extracts and filters CGo flags based on current platform
+func extractFileFlags(cgoFlags []*parser.CGoFlag) *FileFlags {
+	flags := &FileFlags{
+		CFlags:  []string{},
+		LDFlags: []string{},
+	}
+
+	currentOS := runtime.GOOS
+
+	for _, cgoFlag := range cgoFlags {
+		// Filter by platform
+		if cgoFlag.Platform != "" && cgoFlag.Platform != currentOS {
+			continue
+		}
+
+		// Parse the flags string into individual flags
+		flagParts := parseFlags(cgoFlag.Flags)
+
+		switch cgoFlag.Type {
+		case "CFLAGS":
+			flags.CFlags = append(flags.CFlags, flagParts...)
+		case "LDFLAGS":
+			flags.LDFlags = append(flags.LDFlags, flagParts...)
+		}
+	}
+
+	return flags
+}
+
+// parseFlags splits a flags string into individual flags, preserving quoted values
+func parseFlags(flagsStr string) []string {
+	var flags []string
+	var current strings.Builder
+	inQuote := false
+	quoteChar := rune(0)
+
+	for _, r := range flagsStr {
+		switch {
+		case r == '"' || r == '\'':
+			if inQuote && r == quoteChar {
+				inQuote = false
+			} else if !inQuote {
+				inQuote = true
+				quoteChar = r
+			}
+			current.WriteRune(r)
+		case r == ' ' && !inQuote:
+			if current.Len() > 0 {
+				flags = append(flags, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if current.Len() > 0 {
+		flags = append(flags, current.String())
+	}
+
+	return flags
+}
+
+// collectLDFlags aggregates and deduplicates all LDFLAGS
+func collectLDFlags(fileFlags map[string]*FileFlags) []string {
+	seen := make(map[string]bool)
+	var ldFlags []string
+
+	for _, flags := range fileFlags {
+		for _, flag := range flags.LDFlags {
+			if !seen[flag] {
+				seen[flag] = true
+				ldFlags = append(ldFlags, flag)
+			}
+		}
+	}
+
+	return ldFlags
 }
 
 // compileModules compiles all .c files to .o files in parallel
-func compileModules(proj *project.Project, buildDir string, jobs int) error {
+func compileModules(proj *project.Project, buildDir string, jobs int, fileFlags map[string]*FileFlags) error {
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(proj.Modules))
@@ -92,7 +191,7 @@ func compileModules(proj *project.Project, buildDir string, jobs int) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			if err := compileModule(m, buildDir); err != nil {
+			if err := compileModule(m, buildDir, fileFlags); err != nil {
 				errChan <- err
 			}
 		}(mod)
@@ -133,7 +232,7 @@ func needsRecompile(mod *project.ModuleInfo, buildDir string) bool {
 
 // compileModule compiles all .c files for a module
 // Each .c file is compiled to a .o file, which are collected for linking
-func compileModule(mod *project.ModuleInfo, buildDir string) error {
+func compileModule(mod *project.ModuleInfo, buildDir string, fileFlags map[string]*FileFlags) error {
 	// Compile each .c file to its own .o file
 	for _, srcFile := range mod.Files {
 		cFile := paths.ModuleCFilePath(buildDir, mod.ImportPath, filepath.Base(srcFile))
@@ -141,6 +240,11 @@ func compileModule(mod *project.ModuleInfo, buildDir string) error {
 
 		// Build gcc command for this single file
 		args := []string{"-c", cFile, "-o", oFile, "-I", buildDir}
+
+		// Add per-file CFLAGS if present
+		if flags, ok := fileFlags[cFile]; ok && len(flags.CFlags) > 0 {
+			args = append(args, flags.CFlags...)
+		}
 
 		cmd := exec.Command("gcc", args...)
 		cmd.Stdout = os.Stdout
@@ -155,7 +259,7 @@ func compileModule(mod *project.ModuleInfo, buildDir string) error {
 }
 
 // linkBinary links all .o files into final executable
-func linkBinary(proj *project.Project, buildDir string, outputPath string) error {
+func linkBinary(proj *project.Project, buildDir string, outputPath string, ldFlags []string) error {
 	// Check if relinking is needed
 	if !needsRelink(proj, buildDir, outputPath) {
 		return nil
@@ -173,6 +277,11 @@ func linkBinary(proj *project.Project, buildDir string, outputPath string) error
 	// Build gcc command
 	args := oFiles
 	args = append(args, "-o", outputPath)
+
+	// Add aggregated LDFLAGS
+	if len(ldFlags) > 0 {
+		args = append(args, ldFlags...)
+	}
 
 	cmd := exec.Command("gcc", args...)
 	cmd.Stdout = os.Stdout

@@ -8,10 +8,19 @@ import (
 
 // File represents a parsed .cm file
 type File struct {
-	Module   *ModuleDecl
-	Imports  []*Import
-	CImports []*CImport
-	Decls    []*Decl
+	Module    *ModuleDecl
+	Imports   []*Import
+	CImports  []*CImport
+	Decls     []*Decl
+	BuildTags [][]string // Each inner slice is an OR group, outer slice is AND
+	CGoFlags  []*CGoFlag // #cgo directives for compiler/linker flags
+}
+
+// CGoFlag represents a #cgo directive for compiler or linker flags
+type CGoFlag struct {
+	Platform string // Optional platform constraint (e.g., "linux", "darwin", "windows", or empty for all)
+	Type     string // "CFLAGS" or "LDFLAGS"
+	Flags    string // The actual flags (e.g., "-I/usr/local/include" or "-lcurl")
 }
 
 // ModuleDecl represents a module declaration
@@ -125,12 +134,46 @@ func ParseFile(path string) (*File, error) {
 // manualParse is a simple manual parser for initial implementation
 func manualParse(source string, path string) (*File, error) {
 	file := &File{
-		Imports:  []*Import{},
-		CImports: []*CImport{},
-		Decls:    []*Decl{},
+		Imports:   []*Import{},
+		CImports:  []*CImport{},
+		Decls:     []*Decl{},
+		BuildTags: [][]string{},
+		CGoFlags:  []*CGoFlag{},
 	}
 
 	lines := strings.Split(source, "\n")
+
+	// Phase 0: Extract build tags (must be before module declaration)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "// +build ") {
+			tagLine := strings.TrimPrefix(line, "// +build ")
+			// Split by spaces - each tag in the line is OR'd together
+			tags := strings.Fields(tagLine)
+			if len(tags) > 0 {
+				file.BuildTags = append(file.BuildTags, tags)
+			}
+		} else if strings.HasPrefix(line, "module") {
+			// Stop looking for build tags once we hit the module declaration
+			break
+		} else if line != "" && !strings.HasPrefix(line, "//") {
+			// Non-comment, non-empty line before module - stop looking
+			break
+		}
+	}
+
+	// Phase 0.5: Extract #cgo directives (can appear anywhere, usually near top)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#cgo ") {
+			cgoFlag, err := parseCGoDirective(line)
+			if err != nil {
+				// Skip invalid directives for now, could log warning
+				continue
+			}
+			file.CGoFlags = append(file.CGoFlags, cgoFlag)
+		}
+	}
 
 	// Phase 1: Extract module, imports, and cimports
 	for _, line := range lines {
@@ -870,4 +913,56 @@ func parseGlobal(lines []string, startIdx int) (*GlobalDecl, int, error) {
 	globalDecl.Value = valuePart
 
 	return globalDecl, consumed, nil
+}
+
+// parseCGoDirective parses a #cgo directive line
+// Formats:
+//
+//	#cgo CFLAGS: -I/path/to/include
+//	#cgo LDFLAGS: -lcurl -lssl
+//	#cgo linux CFLAGS: -I/usr/include
+//	#cgo darwin LDFLAGS: -framework Security
+func parseCGoDirective(line string) (*CGoFlag, error) {
+	// Remove the #cgo prefix
+	line = strings.TrimPrefix(line, "#cgo ")
+	line = strings.TrimSpace(line)
+
+	// Find the colon that separates the type from the flags
+	colonIdx := strings.Index(line, ":")
+	if colonIdx == -1 {
+		return nil, fmt.Errorf("invalid #cgo directive: missing ':'")
+	}
+
+	// Everything before the colon is the type spec (possibly with platform)
+	typeSpec := strings.TrimSpace(line[:colonIdx])
+	flags := strings.TrimSpace(line[colonIdx+1:])
+
+	// Parse the type spec - could be "CFLAGS" or "linux CFLAGS"
+	parts := strings.Fields(typeSpec)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("invalid #cgo directive: missing type")
+	}
+
+	cgoFlag := &CGoFlag{
+		Flags: flags,
+	}
+
+	if len(parts) == 1 {
+		// Just the type, no platform
+		cgoFlag.Type = parts[0]
+		cgoFlag.Platform = ""
+	} else if len(parts) == 2 {
+		// Platform and type
+		cgoFlag.Platform = parts[0]
+		cgoFlag.Type = parts[1]
+	} else {
+		return nil, fmt.Errorf("invalid #cgo directive: too many parts before ':'")
+	}
+
+	// Validate the type
+	if cgoFlag.Type != "CFLAGS" && cgoFlag.Type != "LDFLAGS" {
+		return nil, fmt.Errorf("invalid #cgo directive: unknown type '%s'", cgoFlag.Type)
+	}
+
+	return cgoFlag, nil
 }

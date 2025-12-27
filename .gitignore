@@ -1,8 +1,8 @@
 # C-minus build artifacts
 .c_minus/
 
-# Binary output
-c_minus
+# Binary output (at project root only)
+/c_minus
 sample/sample
 
 # Go build artifacts

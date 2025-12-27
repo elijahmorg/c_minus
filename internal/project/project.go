@@ -4,8 +4,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
+
+// DefaultBuildContext returns a BuildContext based on the current runtime
+func DefaultBuildContext() *BuildContext {
+	return &BuildContext{
+		OS:      runtime.GOOS,
+		Arch:    runtime.GOARCH,
+		Tags:    make(map[string]bool),
+		Release: false,
+	}
+}
+
+// NewBuildContext creates a BuildContext with custom tags
+func NewBuildContext(customTags []string, release bool) *BuildContext {
+	ctx := DefaultBuildContext()
+	ctx.Release = release
+	for _, tag := range customTags {
+		ctx.Tags[tag] = true
+	}
+	return ctx
+}
 
 // Project represents a C-minus project with all its modules
 type Project struct {
@@ -23,8 +44,21 @@ type ModuleInfo struct {
 	External   bool     // True if external dependency (future)
 }
 
+// BuildContext contains the current build configuration for tag matching
+type BuildContext struct {
+	OS      string          // Current OS (linux, darwin, windows, etc.)
+	Arch    string          // Current architecture (amd64, arm64, etc.)
+	Tags    map[string]bool // Custom build tags from command line
+	Release bool            // True if building in release mode
+}
+
 // Discover finds the project root by locating cm.mod and scans all modules
 func Discover(startDir string) (*Project, error) {
+	return DiscoverWithContext(startDir, nil)
+}
+
+// DiscoverWithContext finds the project root and scans modules, filtering by build context
+func DiscoverWithContext(startDir string, ctx *BuildContext) (*Project, error) {
 	// Find project root by walking up directories
 	rootPath, rootModule, err := findProjectRoot(startDir)
 	if err != nil {
@@ -32,7 +66,7 @@ func Discover(startDir string) (*Project, error) {
 	}
 
 	// Scan for all modules in the project
-	modules, err := scanModules(rootPath)
+	modules, err := scanModulesWithContext(rootPath, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +145,11 @@ func parseModFile(path string) (string, error) {
 
 // scanModules recursively finds all .cm files and groups them by directory
 func scanModules(rootPath string) (map[string]*ModuleInfo, error) {
+	return scanModulesWithContext(rootPath, nil)
+}
+
+// scanModulesWithContext recursively finds all .cm files, filtering by build context
+func scanModulesWithContext(rootPath string, ctx *BuildContext) (map[string]*ModuleInfo, error) {
 	modules := make(map[string]*ModuleInfo)
 
 	err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
@@ -126,6 +165,18 @@ func scanModules(rootPath string) (map[string]*ModuleInfo, error) {
 		// Skip non-.cm files
 		if !strings.HasSuffix(path, ".cm") {
 			return nil
+		}
+
+		// Check build tags if we have a context
+		if ctx != nil {
+			buildTags, err := extractBuildTags(path)
+			if err != nil {
+				return err
+			}
+			if !matchesBuildTags(buildTags, ctx) {
+				// File doesn't match build tags, skip it
+				return nil
+			}
 		}
 
 		// Get directory containing this .cm file
@@ -240,6 +291,95 @@ func fastScanFile(path string) (module string, imports []string, err error) {
 	}
 
 	return module, imports, nil
+}
+
+// extractBuildTags reads a file and extracts build tags
+func extractBuildTags(path string) ([][]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", path, err)
+	}
+
+	var buildTags [][]string
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "// +build ") {
+			tagLine := strings.TrimPrefix(line, "// +build ")
+			// Split by spaces - each tag in the line is OR'd together
+			tags := strings.Fields(tagLine)
+			if len(tags) > 0 {
+				buildTags = append(buildTags, tags)
+			}
+		} else if strings.HasPrefix(line, "module") {
+			// Stop looking for build tags once we hit the module declaration
+			break
+		} else if line != "" && !strings.HasPrefix(line, "//") {
+			// Non-comment, non-empty line before module - stop looking
+			break
+		}
+	}
+
+	return buildTags, nil
+}
+
+// matchesBuildTags checks if the given build tags match the current context
+func matchesBuildTags(buildTags [][]string, ctx *BuildContext) bool {
+	// No build tags means always include
+	if len(buildTags) == 0 {
+		return true
+	}
+
+	// Each group (line) must have at least one matching tag (AND between lines)
+	for _, orGroup := range buildTags {
+		if !matchesOrGroup(orGroup, ctx) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// matchesOrGroup checks if any tag in the group matches (OR logic)
+func matchesOrGroup(tags []string, ctx *BuildContext) bool {
+	for _, tag := range tags {
+		if matchesTag(tag, ctx) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesTag checks if a single tag matches the current context
+func matchesTag(tag string, ctx *BuildContext) bool {
+	// Handle negation
+	if strings.HasPrefix(tag, "!") {
+		return !matchesTag(tag[1:], ctx)
+	}
+
+	// Check built-in OS tags
+	switch tag {
+	case "linux", "darwin", "windows", "freebsd", "openbsd", "netbsd":
+		return ctx.OS == tag
+	}
+
+	// Check built-in arch tags
+	switch tag {
+	case "amd64", "arm64", "arm", "386", "mips", "mips64", "ppc64", "s390x":
+		return ctx.Arch == tag
+	}
+
+	// Check build mode tags
+	switch tag {
+	case "debug":
+		return !ctx.Release
+	case "release":
+		return ctx.Release
+	}
+
+	// Check custom tags
+	return ctx.Tags[tag]
 }
 
 // detectCycles performs topological sort to detect circular dependencies
