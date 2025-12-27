@@ -227,3 +227,203 @@ func helper() int {
 		t.Error("expected private function")
 	}
 }
+
+func TestParseUnion(t *testing.T) {
+	source := `module "types"
+
+pub union Value {
+    int i;
+    float f;
+    char* s;
+};
+
+union PrivateData {
+    int raw;
+    char bytes[4];
+};
+`
+
+	file, err := manualParse(source, "test.cm")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if len(file.Decls) != 2 {
+		t.Fatalf("expected 2 declarations, got %d", len(file.Decls))
+	}
+
+	// Check public union
+	if file.Decls[0].Union == nil {
+		t.Fatal("expected union declaration")
+	}
+	pubUnion := file.Decls[0].Union
+	if !pubUnion.Public {
+		t.Error("expected public union")
+	}
+	if pubUnion.Name != "Value" {
+		t.Errorf("expected union name Value, got %s", pubUnion.Name)
+	}
+	if pubUnion.Body == "" {
+		t.Error("expected union body")
+	}
+
+	// Check private union
+	if file.Decls[1].Union == nil {
+		t.Fatal("expected union declaration")
+	}
+	privUnion := file.Decls[1].Union
+	if privUnion.Public {
+		t.Error("expected private union")
+	}
+	if privUnion.Name != "PrivateData" {
+		t.Errorf("expected union name PrivateData, got %s", privUnion.Name)
+	}
+}
+
+func TestParseUnionForwardDeclaration(t *testing.T) {
+	source := `module "types"
+
+pub union Data;
+
+pub struct Container {
+    union Data* data;
+};
+`
+
+	file, err := manualParse(source, "test.cm")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if len(file.Decls) != 2 {
+		t.Fatalf("expected 2 declarations, got %d", len(file.Decls))
+	}
+
+	// Check forward declaration
+	if file.Decls[0].Union == nil {
+		t.Fatal("expected union declaration")
+	}
+	fwdDecl := file.Decls[0].Union
+	if fwdDecl.Name != "Data" {
+		t.Errorf("expected union name Data, got %s", fwdDecl.Name)
+	}
+	if fwdDecl.Body != "" {
+		t.Error("expected empty body for forward declaration")
+	}
+}
+
+func TestParseFunctionPointerParam(t *testing.T) {
+	source := `module "callbacks"
+
+pub func qsort(void* base, size_t n, int (*cmp)(void*, void*)) void {
+    // implementation
+}
+`
+
+	file, err := manualParse(source, "test.cm")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if len(file.Decls) != 1 {
+		t.Fatalf("expected 1 declaration, got %d", len(file.Decls))
+	}
+
+	fn := file.Decls[0].Function
+	if fn == nil {
+		t.Fatal("expected function declaration")
+	}
+
+	if len(fn.Params) != 3 {
+		t.Fatalf("expected 3 parameters, got %d", len(fn.Params))
+	}
+
+	// Check function pointer parameter
+	cmpParam := fn.Params[2]
+	if cmpParam.Name != "cmp" {
+		t.Errorf("expected parameter name 'cmp', got '%s'", cmpParam.Name)
+	}
+	if cmpParam.Type != "int (*)(void*, void*)" {
+		t.Errorf("expected parameter type 'int (*)(void*, void*)', got '%s'", cmpParam.Type)
+	}
+}
+
+func TestParseFunctionPointerParamComplex(t *testing.T) {
+	source := `module "events"
+
+pub func register(int id, void (*handler)(int, char*), void* ctx) int {
+    return 0;
+}
+`
+
+	file, err := manualParse(source, "test.cm")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	fn := file.Decls[0].Function
+	if fn == nil {
+		t.Fatal("expected function declaration")
+	}
+
+	if len(fn.Params) != 3 {
+		t.Fatalf("expected 3 parameters, got %d", len(fn.Params))
+	}
+
+	// Check first param
+	if fn.Params[0].Name != "id" || fn.Params[0].Type != "int" {
+		t.Errorf("unexpected first parameter: %+v", fn.Params[0])
+	}
+
+	// Check function pointer parameter
+	handler := fn.Params[1]
+	if handler.Name != "handler" {
+		t.Errorf("expected parameter name 'handler', got '%s'", handler.Name)
+	}
+	if handler.Type != "void (*)(int, char*)" {
+		t.Errorf("expected parameter type 'void (*)(int, char*)', got '%s'", handler.Type)
+	}
+
+	// Check third param
+	if fn.Params[2].Name != "ctx" || fn.Params[2].Type != "void*" {
+		t.Errorf("unexpected third parameter: %+v", fn.Params[2])
+	}
+}
+
+func TestParseFunctionPointerTypedef(t *testing.T) {
+	source := `module "callbacks"
+
+pub typedef int (*CompareFunc)(void* a, void* b);
+pub typedef void (*EventHandler)(int event_id, void* data);
+`
+
+	file, err := manualParse(source, "test.cm")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if len(file.Decls) != 2 {
+		t.Fatalf("expected 2 declarations, got %d", len(file.Decls))
+	}
+
+	// Check first typedef
+	if file.Decls[0].Typedef == nil {
+		t.Fatal("expected typedef declaration")
+	}
+	td1 := file.Decls[0].Typedef
+	if !td1.Public {
+		t.Error("expected public typedef")
+	}
+	if td1.Body != "int (*CompareFunc)(void* a, void* b)" {
+		t.Errorf("unexpected typedef body: %s", td1.Body)
+	}
+
+	// Check second typedef
+	if file.Decls[1].Typedef == nil {
+		t.Fatal("expected typedef declaration")
+	}
+	td2 := file.Decls[1].Typedef
+	if td2.Body != "void (*EventHandler)(int event_id, void* data)" {
+		t.Errorf("unexpected typedef body: %s", td2.Body)
+	}
+}

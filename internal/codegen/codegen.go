@@ -24,6 +24,8 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 		for _, decl := range file.Decls {
 			if decl.Struct != nil {
 				typeNames[decl.Struct.Name] = true
+			} else if decl.Union != nil {
+				typeNames[decl.Union.Name] = true
 			} else if decl.Enum != nil {
 				typeNames[decl.Enum.Name] = true
 				// Extract enum values from the body
@@ -62,6 +64,21 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 					docComment: decl.Struct.DocComment,
 				}
 				if decl.Struct.Public {
+					publicTypeDecls = append(publicTypeDecls, typeDecl)
+				} else {
+					privateTypeDecls = append(privateTypeDecls, typeDecl)
+				}
+			} else if decl.Union != nil {
+				// Transform the union body to qualify type references
+				transformedBody := transformTypeBody(decl.Union.Body, typeNames, moduleName)
+				typeDecl := &typeDecl{
+					kind:       "union",
+					name:       decl.Union.Name,
+					body:       transformedBody,
+					public:     decl.Union.Public,
+					docComment: decl.Union.DocComment,
+				}
+				if decl.Union.Public {
 					publicTypeDecls = append(publicTypeDecls, typeDecl)
 				} else {
 					privateTypeDecls = append(privateTypeDecls, typeDecl)
@@ -127,8 +144,8 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 
 // typeDecl represents a type declaration for code generation
 type typeDecl struct {
-	kind       string // "struct", "enum", or "typedef"
-	name       string // type name (for struct/enum)
+	kind       string // "struct", "union", "enum", or "typedef"
+	name       string // type name (for struct/union/enum)
 	body       string // opaque body content
 	public     bool
 	docComment string // Go-style doc comment
@@ -160,10 +177,12 @@ func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publ
 		sb.WriteString("\n")
 	}
 
-	// Forward declarations for all structs (to handle dependencies)
+	// Forward declarations for all structs and unions (to handle dependencies)
 	for _, td := range publicTypes {
 		if td.kind == "struct" && td.body != "" {
 			sb.WriteString(fmt.Sprintf("struct %s_%s;\n", moduleName, td.name))
+		} else if td.kind == "union" && td.body != "" {
+			sb.WriteString(fmt.Sprintf("union %s_%s;\n", moduleName, td.name))
 		}
 	}
 	if len(publicTypes) > 0 {
@@ -210,10 +229,12 @@ func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, p
 	// Include public header
 	sb.WriteString(fmt.Sprintf("#include \"%s.h\"\n\n", moduleName))
 
-	// Forward declarations for private structs
+	// Forward declarations for private structs and unions
 	for _, td := range privateTypes {
 		if td.kind == "struct" && td.body != "" {
 			sb.WriteString(fmt.Sprintf("struct %s_%s;\n", moduleName, td.name))
+		} else if td.kind == "union" && td.body != "" {
+			sb.WriteString(fmt.Sprintf("union %s_%s;\n", moduleName, td.name))
 		}
 	}
 	if len(privateTypes) > 0 {
@@ -329,9 +350,18 @@ func generateFunctionSignature(fn *parser.FuncDecl, moduleName string) string {
 		}
 		// Transform parameter type: mangle non-primitive types with module prefix
 		paramType := mangleTypeInSignature(param.Type, moduleName)
-		sb.WriteString(paramType)
-		sb.WriteString(" ")
-		sb.WriteString(param.Name)
+
+		// Check if this is a function pointer type (contains "(*)")
+		// For function pointers, the name goes inside: "int (*name)(args)"
+		if strings.Contains(paramType, "(*)") {
+			// Insert the name after (*
+			paramStr := strings.Replace(paramType, "(*)", "(*"+param.Name+")", 1)
+			sb.WriteString(paramStr)
+		} else {
+			sb.WriteString(paramType)
+			sb.WriteString(" ")
+			sb.WriteString(param.Name)
+		}
 	}
 	sb.WriteString(")")
 
@@ -344,15 +374,28 @@ func generateFunctionSignature(fn *parser.FuncDecl, moduleName string) string {
 func mangleTypeInSignature(typeName string, moduleName string) string {
 	// Common primitive types - don't mangle these
 	primitives := map[string]bool{
-		"void":     true,
-		"char":     true,
-		"short":    true,
-		"int":      true,
-		"long":     true,
-		"float":    true,
-		"double":   true,
-		"unsigned": true,
-		"signed":   true,
+		"void":      true,
+		"char":      true,
+		"short":     true,
+		"int":       true,
+		"long":      true,
+		"float":     true,
+		"double":    true,
+		"unsigned":  true,
+		"signed":    true,
+		"size_t":    true,
+		"ssize_t":   true,
+		"int8_t":    true,
+		"int16_t":   true,
+		"int32_t":   true,
+		"int64_t":   true,
+		"uint8_t":   true,
+		"uint16_t":  true,
+		"uint32_t":  true,
+		"uint64_t":  true,
+		"intptr_t":  true,
+		"uintptr_t": true,
+		"ptrdiff_t": true,
 		// Also handle pointer types
 	}
 
@@ -364,9 +407,12 @@ func mangleTypeInSignature(typeName string, moduleName string) string {
 		return mangleTypeInSignature(baseType, moduleName) + asterisks
 	}
 
-	// Check for struct/enum keywords
+	// Check for struct/union/enum keywords
 	if strings.HasPrefix(typeName, "struct ") {
 		return typeName // Already has struct keyword
+	}
+	if strings.HasPrefix(typeName, "union ") {
+		return typeName // Already has union keyword
 	}
 	if strings.HasPrefix(typeName, "enum ") {
 		return typeName // Already has enum keyword
@@ -414,6 +460,15 @@ func generateTypeDeclaration(td *typeDecl, moduleName string) string {
 		} else {
 			// Full struct definition with typedef
 			sb.WriteString(fmt.Sprintf("typedef struct %s_%s %s", moduleName, td.name, td.body))
+			sb.WriteString(fmt.Sprintf(" %s_%s;", moduleName, td.name))
+		}
+	case "union":
+		if td.body == "" {
+			// Forward declaration
+			sb.WriteString(fmt.Sprintf("union %s_%s;", moduleName, td.name))
+		} else {
+			// Full union definition with typedef
+			sb.WriteString(fmt.Sprintf("typedef union %s_%s %s", moduleName, td.name, td.body))
 			sb.WriteString(fmt.Sprintf(" %s_%s;", moduleName, td.name))
 		}
 	case "enum":

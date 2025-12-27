@@ -33,6 +33,7 @@ type CImport struct {
 type Decl struct {
 	Function *FuncDecl
 	Struct   *StructDecl
+	Union    *UnionDecl
 	Enum     *EnumDecl
 	Typedef  *TypedefDecl
 }
@@ -55,6 +56,15 @@ type Param struct {
 
 // StructDecl represents a struct type declaration
 type StructDecl struct {
+	Public     bool
+	Name       string
+	Body       string // Opaque body: everything between { and }
+	Semi       bool
+	DocComment string // Go-style doc comment (comments immediately preceding the declaration)
+}
+
+// UnionDecl represents a union type declaration
+type UnionDecl struct {
 	Public     bool
 	Name       string
 	Body       string // Opaque body: everything between { and }
@@ -178,6 +188,14 @@ func manualParse(source string, path string) (*File, error) {
 			structDecl.DocComment = docComment
 			file.Decls = append(file.Decls, &Decl{Struct: structDecl})
 			i += consumed
+		} else if strings.Contains(line, "union") {
+			unionDecl, consumed, err := parseUnion(lines, i)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
+			}
+			unionDecl.DocComment = docComment
+			file.Decls = append(file.Decls, &Decl{Union: unionDecl})
+			i += consumed
 		} else if strings.Contains(line, "enum") {
 			enumDecl, consumed, err := parseEnum(lines, i)
 			if err != nil {
@@ -235,8 +253,8 @@ func parseFunction(lines []string, startIdx int, fullSource string) (*FuncDecl, 
 
 	funcDecl.Name = nameParts[0]
 
-	// Find return type (word after ')')
-	closeParenIdx := strings.Index(line, ")")
+	// Find matching closing parenthesis (respecting nested parens for function pointers)
+	closeParenIdx := findMatchingParen(line, parenIdx)
 	if closeParenIdx == -1 {
 		return nil, 0, fmt.Errorf("expected ')' after parameters")
 	}
@@ -260,7 +278,25 @@ func parseFunction(lines []string, startIdx int, fullSource string) (*FuncDecl, 
 	return funcDecl, consumed, nil
 }
 
+// findMatchingParen finds the index of the closing ')' that matches the opening '(' at startIdx
+func findMatchingParen(s string, startIdx int) int {
+	depth := 0
+	for i := startIdx; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 // parseParams parses function parameters from string like "int a, float b" (C-style)
+// Also handles function pointer parameters like "int (*cmp)(void*, void*)"
 func parseParams(paramStr string) []*Param {
 	params := []*Param{}
 
@@ -268,12 +304,26 @@ func parseParams(paramStr string) []*Param {
 		return params
 	}
 
-	parts := strings.Split(paramStr, ",")
+	// Split on commas, but respect parentheses (for function pointer params)
+	parts := splitParamsRespectingParens(paramStr)
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Check if this is a function pointer parameter: contains "(*" pattern
+		if strings.Contains(part, "(*") {
+			param := parseFunctionPointerParam(part)
+			if param != nil {
+				params = append(params, param)
+			}
+			continue
+		}
+
+		// Normal parameter: C-style where type comes first, name is last token
 		fields := strings.Fields(part)
 		if len(fields) >= 2 {
-			// C-style: type comes first, name is the last token
 			// This handles cases like "int a", "ticket.Ticket* t", "unsigned int x"
 			name := fields[len(fields)-1]
 			typeParts := fields[:len(fields)-1]
@@ -286,6 +336,73 @@ func parseParams(paramStr string) []*Param {
 	}
 
 	return params
+}
+
+// splitParamsRespectingParens splits a parameter string on commas,
+// but respects parentheses so function pointer params stay together.
+// E.g., "int a, void (*cb)(int, int), float b" -> ["int a", "void (*cb)(int, int)", "float b"]
+func splitParamsRespectingParens(paramStr string) []string {
+	var parts []string
+	var current strings.Builder
+	depth := 0
+
+	for _, ch := range paramStr {
+		switch ch {
+		case '(':
+			depth++
+			current.WriteRune(ch)
+		case ')':
+			depth--
+			current.WriteRune(ch)
+		case ',':
+			if depth == 0 {
+				parts = append(parts, current.String())
+				current.Reset()
+			} else {
+				current.WriteRune(ch)
+			}
+		default:
+			current.WriteRune(ch)
+		}
+	}
+
+	// Don't forget the last part
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+
+	return parts
+}
+
+// parseFunctionPointerParam parses a function pointer parameter.
+// Input format: "returnType (*name)(paramTypes)" or "returnType (*name)(paramTypes)"
+// Returns a Param with the name extracted and the type as the full signature minus the name.
+func parseFunctionPointerParam(part string) *Param {
+	// Find the (*name) part
+	// Pattern: returnType (*name)(paramTypes)
+	startParen := strings.Index(part, "(*")
+	if startParen == -1 {
+		return nil
+	}
+
+	// Find the closing paren after the name
+	endParen := strings.Index(part[startParen:], ")")
+	if endParen == -1 {
+		return nil
+	}
+	endParen += startParen // Adjust to absolute position
+
+	// Extract the name (between "(* and )")
+	name := strings.TrimSpace(part[startParen+2 : endParen])
+
+	// Build the type by replacing the name with empty
+	// E.g., "int (*cmp)(void*, void*)" -> "int (*)(void*, void*)"
+	typeStr := part[:startParen+2] + part[endParen:]
+
+	return &Param{
+		Name: name,
+		Type: typeStr,
+	}
 }
 
 // extractBraceBlock extracts a brace-balanced block starting from a line
@@ -388,6 +505,60 @@ func parseStruct(lines []string, startIdx int) (*StructDecl, int, error) {
 	}
 
 	return structDecl, consumed, nil
+}
+
+// parseUnion parses a union declaration starting at the given line
+func parseUnion(lines []string, startIdx int) (*UnionDecl, int, error) {
+	line := strings.TrimSpace(lines[startIdx])
+
+	unionDecl := &UnionDecl{}
+
+	// Check for pub modifier
+	if strings.HasPrefix(line, "pub ") {
+		unionDecl.Public = true
+		line = strings.TrimPrefix(line, "pub ")
+		line = strings.TrimSpace(line)
+	}
+
+	// Parse "union Name"
+	if !strings.HasPrefix(line, "union ") {
+		return nil, 0, fmt.Errorf("expected 'union' keyword")
+	}
+
+	line = strings.TrimPrefix(line, "union ")
+	line = strings.TrimSpace(line)
+
+	// Extract union name (word before '{' or ';')
+	parts := strings.FieldsFunc(line, func(r rune) bool {
+		return r == '{' || r == ';'
+	})
+	if len(parts) < 1 {
+		return nil, 0, fmt.Errorf("missing union name")
+	}
+
+	unionDecl.Name = strings.TrimSpace(parts[0])
+
+	// Check if this is a forward declaration (ends with ;)
+	if strings.Contains(line, ";") && !strings.Contains(line, "{") {
+		unionDecl.Body = ""
+		unionDecl.Semi = true
+		return unionDecl, 1, nil
+	}
+
+	// Extract union body (brace-balanced)
+	body, consumed := extractBraceBlock(lines, startIdx)
+	unionDecl.Body = body
+
+	// Check for semicolon after body
+	lastLine := strings.TrimSpace(lines[startIdx+consumed-1])
+	if strings.HasSuffix(lastLine, ";") || (startIdx+consumed < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[startIdx+consumed]), ";")) {
+		unionDecl.Semi = true
+		if startIdx+consumed < len(lines) && strings.TrimSpace(lines[startIdx+consumed]) == ";" {
+			consumed++
+		}
+	}
+
+	return unionDecl, consumed, nil
 }
 
 // parseEnum parses an enum declaration starting at the given line
