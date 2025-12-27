@@ -37,6 +37,7 @@ type Decl struct {
 	Enum     *EnumDecl
 	Typedef  *TypedefDecl
 	Global   *GlobalDecl
+	Define   *DefineDecl
 }
 
 // GlobalDecl represents a global variable declaration
@@ -45,6 +46,14 @@ type GlobalDecl struct {
 	Type       string // e.g., "int", "char*", "const char*"
 	Name       string
 	Value      string // Initial value (optional, empty if uninitialized)
+	DocComment string
+}
+
+// DefineDecl represents a #define constant declaration
+type DefineDecl struct {
+	Public     bool
+	Name       string
+	Value      string // The constant value (e.g., "4096", `"1.0.0"`)
 	DocComment string
 }
 
@@ -221,6 +230,14 @@ func manualParse(source string, path string) (*File, error) {
 			}
 			typedefDecl.DocComment = docComment
 			file.Decls = append(file.Decls, &Decl{Typedef: typedefDecl})
+			i += consumed
+		} else if isDefineDecl(line) {
+			defineDecl, consumed, err := parseDefine(lines, i)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
+			}
+			defineDecl.DocComment = docComment
+			file.Decls = append(file.Decls, &Decl{Define: defineDecl})
 			i += consumed
 		} else if isGlobalVariableDecl(line) {
 			globalDecl, consumed, err := parseGlobal(lines, i)
@@ -694,6 +711,52 @@ func buildDocComment(commentLines []string) string {
 		parts = append(parts, text)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// isDefineDecl checks if a line is a #define constant declaration
+// Handles both "pub #define NAME value" and "#define NAME value"
+func isDefineDecl(line string) bool {
+	// Check for "pub #define" or "#define"
+	if strings.HasPrefix(line, "pub ") {
+		line = strings.TrimPrefix(line, "pub ")
+		line = strings.TrimSpace(line)
+	}
+	return strings.HasPrefix(line, "#define ")
+}
+
+// parseDefine parses a #define constant declaration
+func parseDefine(lines []string, startIdx int) (*DefineDecl, int, error) {
+	line := strings.TrimSpace(lines[startIdx])
+
+	defineDecl := &DefineDecl{}
+
+	// Check for pub modifier
+	if strings.HasPrefix(line, "pub ") {
+		defineDecl.Public = true
+		line = strings.TrimPrefix(line, "pub ")
+		line = strings.TrimSpace(line)
+	}
+
+	// Parse "#define NAME value"
+	if !strings.HasPrefix(line, "#define ") {
+		return nil, 0, fmt.Errorf("expected '#define'")
+	}
+
+	line = strings.TrimPrefix(line, "#define ")
+	line = strings.TrimSpace(line)
+
+	// Split into name and value
+	fields := strings.SplitN(line, " ", 2)
+	if len(fields) < 1 {
+		return nil, 0, fmt.Errorf("missing define name")
+	}
+
+	defineDecl.Name = strings.TrimSpace(fields[0])
+	if len(fields) >= 2 {
+		defineDecl.Value = strings.TrimSpace(fields[1])
+	}
+
+	return defineDecl, 1, nil
 }
 
 // isGlobalVariableDecl checks if a line looks like a global variable declaration

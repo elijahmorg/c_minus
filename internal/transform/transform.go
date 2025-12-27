@@ -92,25 +92,30 @@ type EnumValueMap map[string]string
 // Example: {"counter": "state_counter", "version": "state_version"}
 type GlobalVarMap map[string]string
 
+// DefineMap maps #define constant names to their mangled names
+// Example: {"MAX_PATH": "fileio_MAX_PATH", "BUFFER_SIZE": "fileio_BUFFER_SIZE"}
+type DefineMap map[string]string
+
 // TransformFunctionBody transforms qualified symbol access in a function body
 // Converts "module.symbol" to "full_module_path_symbol" using the import map
 func TransformFunctionBody(body string, importMap ImportMap) string {
-	return TransformFunctionBodyFull(body, importMap, nil, nil, nil)
+	return TransformFunctionBodyFull(body, importMap, nil, nil, nil, nil)
 }
 
 // TransformFunctionBodyWithEnums transforms qualified symbol access and enum values in a function body
 // Converts "module.symbol" to "full_module_path_symbol" using the import map
 // Also transforms bare enum values like "TODO" to "module_EnumName_TODO"
 func TransformFunctionBodyWithEnums(body string, importMap ImportMap, enumValues EnumValueMap) string {
-	return TransformFunctionBodyFull(body, importMap, nil, enumValues, nil)
+	return TransformFunctionBodyFull(body, importMap, nil, enumValues, nil, nil)
 }
 
-// TransformFunctionBodyFull transforms qualified symbol access, C imports, enum values, and global variables
+// TransformFunctionBodyFull transforms qualified symbol access, C imports, enum values, global variables, and defines
 // - For c_minus imports: "module.symbol" -> "module_symbol" (mangled)
 // - For C imports: "stdio.printf" -> "printf" (just strip prefix, no mangling)
 // - For enum values: "TODO" -> "module_EnumName_TODO"
 // - For global variables: "counter" -> "module_counter"
-func TransformFunctionBodyFull(body string, importMap ImportMap, cimportMap CImportMap, enumValues EnumValueMap, globalVars GlobalVarMap) string {
+// - For defines: "MAX_PATH" -> "module_MAX_PATH" (only public defines)
+func TransformFunctionBodyFull(body string, importMap ImportMap, cimportMap CImportMap, enumValues EnumValueMap, globalVars GlobalVarMap, defines DefineMap) string {
 	// Tokenize the body
 	tokens := tokenize(body)
 
@@ -176,6 +181,9 @@ func TransformFunctionBodyFull(body string, importMap ImportMap, cimportMap CImp
 				result.WriteString(replacement)
 			} else if replacement, ok := globalVars[tok.value]; ok {
 				// Check if this is a global variable that needs mangling
+				result.WriteString(replacement)
+			} else if replacement, ok := defines[tok.value]; ok {
+				// Check if this is a #define constant that needs mangling
 				result.WriteString(replacement)
 			} else {
 				result.WriteString(tok.value)

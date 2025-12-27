@@ -545,6 +545,83 @@ func containsHelper(s, substr string) bool {
 	return false
 }
 
+func TestParseDefineConstant(t *testing.T) {
+	source := `module "fileio"
+
+// Max path length
+pub #define MAX_PATH 4096
+
+// Buffer size for IO
+pub #define BUFFER_SIZE 1024
+
+// Internal chunk size (private)
+#define INTERNAL_CHUNK 512
+
+// Version string
+pub #define VERSION "1.0.0"
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 4 {
+		t.Fatalf("expected 4 declarations, got %d", len(file.Decls))
+	}
+
+	// Check first define: pub #define MAX_PATH 4096
+	d1 := file.Decls[0].Define
+	if d1 == nil {
+		t.Fatal("expected first declaration to be a define")
+	}
+	if !d1.Public {
+		t.Error("expected MAX_PATH to be public")
+	}
+	if d1.Name != "MAX_PATH" {
+		t.Errorf("expected name 'MAX_PATH', got '%s'", d1.Name)
+	}
+	if d1.Value != "4096" {
+		t.Errorf("expected value '4096', got '%s'", d1.Value)
+	}
+
+	// Check second define: pub #define BUFFER_SIZE 1024
+	d2 := file.Decls[1].Define
+	if d2 == nil {
+		t.Fatal("expected second declaration to be a define")
+	}
+	if d2.Name != "BUFFER_SIZE" {
+		t.Errorf("expected name 'BUFFER_SIZE', got '%s'", d2.Name)
+	}
+
+	// Check third define: #define INTERNAL_CHUNK 512 (private)
+	d3 := file.Decls[2].Define
+	if d3 == nil {
+		t.Fatal("expected third declaration to be a define")
+	}
+	if d3.Public {
+		t.Error("expected INTERNAL_CHUNK to be private")
+	}
+	if d3.Name != "INTERNAL_CHUNK" {
+		t.Errorf("expected name 'INTERNAL_CHUNK', got '%s'", d3.Name)
+	}
+
+	// Check fourth define: pub #define VERSION "1.0.0"
+	d4 := file.Decls[3].Define
+	if d4 == nil {
+		t.Fatal("expected fourth declaration to be a define")
+	}
+	if d4.Value != `"1.0.0"` {
+		t.Errorf("expected value '\"1.0.0\"', got '%s'", d4.Value)
+	}
+}
+
 func TestParseGlobalVariable(t *testing.T) {
 	source := `module "state"
 

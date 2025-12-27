@@ -92,7 +92,7 @@ func TestTransformFunctionBodyFull_CImports(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := TransformFunctionBodyFull(tt.body, nil, tt.cimportMap, nil, nil)
+			result := TransformFunctionBodyFull(tt.body, nil, tt.cimportMap, nil, nil, nil)
 			if result != tt.expected {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
@@ -107,7 +107,7 @@ func TestTransformFunctionBodyFull_MixedImports(t *testing.T) {
 	importMap := ImportMap{"ticket": "ticket"}
 	cimportMap := CImportMap{"stdio": "stdio.h"}
 
-	result := TransformFunctionBodyFull(body, importMap, cimportMap, nil, nil)
+	result := TransformFunctionBodyFull(body, importMap, cimportMap, nil, nil, nil)
 	expected := `{ printf("calling module\n"); ticket_create(&t); }`
 
 	if result != expected {

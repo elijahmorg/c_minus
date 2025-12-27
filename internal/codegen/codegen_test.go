@@ -25,9 +25,10 @@ func TestGeneratePublicHeader(t *testing.T) {
 		{signature: "int math_multiply(int a, int b)"},
 	}
 	publicGlobals := []*globalDecl{}
+	publicDefines := []*defineDecl{}
 
 	imports := make(map[string]bool)
-	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, imports, tmpDir)
+	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, publicDefines, imports, tmpDir)
 	if err != nil {
 		t.Fatalf("generatePublicHeader failed: %v", err)
 	}
@@ -73,8 +74,9 @@ func TestGenerateInternalHeader(t *testing.T) {
 		{signature: "int math_helper(int x)"},
 	}
 	privateGlobals := []*globalDecl{}
+	privateDefines := []*defineDecl{}
 
-	err := generateInternalHeader(mod, privateTypes, privateFuncs, privateGlobals, tmpDir)
+	err := generateInternalHeader(mod, privateTypes, privateFuncs, privateGlobals, privateDefines, tmpDir)
 	if err != nil {
 		t.Fatalf("generateInternalHeader failed: %v", err)
 	}
@@ -143,7 +145,8 @@ func TestGenerateCFile(t *testing.T) {
 
 	enumValues := make(transform.EnumValueMap)
 	globalVars := make(transform.GlobalVarMap)
-	err := generateCFile(mod, file, srcFile, buildDir, enumValues, globalVars)
+	defines := make(transform.DefineMap)
+	err := generateCFile(mod, file, srcFile, buildDir, enumValues, globalVars, defines)
 	if err != nil {
 		t.Fatalf("generateCFile failed: %v", err)
 	}
@@ -317,9 +320,10 @@ func TestGeneratePublicHeaderWithDocComments(t *testing.T) {
 		},
 	}
 	publicGlobals := []*globalDecl{}
+	publicDefines := []*defineDecl{}
 
 	imports := make(map[string]bool)
-	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, imports, tmpDir)
+	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, publicDefines, imports, tmpDir)
 	if err != nil {
 		t.Fatalf("generatePublicHeader failed: %v", err)
 	}
@@ -373,9 +377,10 @@ func TestGenerateGlobalVariables(t *testing.T) {
 			public:   true,
 		},
 	}
+	publicDefines := []*defineDecl{}
 
 	imports := make(map[string]bool)
-	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, imports, tmpDir)
+	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, publicDefines, imports, tmpDir)
 	if err != nil {
 		t.Fatalf("generatePublicHeader failed: %v", err)
 	}

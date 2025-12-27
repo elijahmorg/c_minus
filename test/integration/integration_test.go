@@ -519,6 +519,126 @@ func indexOf(s, substr string) int {
 	return -1
 }
 
+// TestDefineConstants tests #define constant support
+func TestDefineConstants(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create cm.mod
+	modFile := filepath.Join(tmpDir, "cm.mod")
+	if err := os.WriteFile(modFile, []byte(`module "test/defines"`), 0644); err != nil {
+		t.Fatalf("failed to create cm.mod: %v", err)
+	}
+
+	// Create config module directory
+	configDir := filepath.Join(tmpDir, "config")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+
+	// Create config/config.cm with #define constants
+	configCM := `module "config"
+
+// Max buffer size
+pub #define MAX_BUFFER 1024
+
+// Timeout in ms
+pub #define TIMEOUT 5000
+
+// Internal chunk size (private)
+#define CHUNK_SIZE 256
+
+pub func get_buffer_size() int {
+    return MAX_BUFFER;
+}
+
+pub func get_timeout() int {
+    return TIMEOUT;
+}
+
+pub func get_chunk() int {
+    return CHUNK_SIZE;
+}
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.cm"), []byte(configCM), 0644); err != nil {
+		t.Fatalf("failed to create config.cm: %v", err)
+	}
+
+	// Create main.cm
+	mainCM := `module "main"
+
+cimport "stdio.h"
+
+import "config"
+
+func main() int {
+    stdio.printf("Buffer size: %d\n", config.MAX_BUFFER);
+    stdio.printf("Timeout: %d\n", config.get_timeout());
+    return config.MAX_BUFFER + config.TIMEOUT;
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainCM), 0644); err != nil {
+		t.Fatalf("failed to create main.cm: %v", err)
+	}
+
+	// Find c_minus binary
+	cMinusBinary := findCMinusBinary(t)
+
+	// Run c_minus build
+	cmd := exec.Command(cMinusBinary, "build")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify config.h contains #define macros with mangled names
+	buildDir := filepath.Join(tmpDir, ".c_minus")
+	configH, err := os.ReadFile(filepath.Join(buildDir, "config.h"))
+	if err != nil {
+		t.Fatalf("failed to read config.h: %v", err)
+	}
+	configHContent := string(configH)
+
+	if !contains(configHContent, "#define config_MAX_BUFFER 1024") {
+		t.Errorf("config.h missing #define for MAX_BUFFER, got:\n%s", configHContent)
+	}
+	if !contains(configHContent, "#define config_TIMEOUT 5000") {
+		t.Errorf("config.h missing #define for TIMEOUT, got:\n%s", configHContent)
+	}
+
+	// Verify private defines are NOT in public header
+	if contains(configHContent, "CHUNK_SIZE") {
+		t.Errorf("config.h should not contain private CHUNK_SIZE, got:\n%s", configHContent)
+	}
+
+	// Verify private defines are in internal header
+	configInternalH, err := os.ReadFile(filepath.Join(buildDir, "config_internal.h"))
+	if err != nil {
+		t.Fatalf("failed to read config_internal.h: %v", err)
+	}
+	configInternalHContent := string(configInternalH)
+
+	if !contains(configInternalHContent, "#define CHUNK_SIZE 256") {
+		t.Errorf("config_internal.h missing #define for CHUNK_SIZE, got:\n%s", configInternalHContent)
+	}
+
+	// Verify the binary runs correctly
+	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
+	runCmd := exec.Command(binaryPath)
+	runOutput, err := runCmd.CombinedOutput()
+	// Exit code 6024 (1024 + 5000) is expected
+	if err != nil {
+		// That's fine, we just want to check output
+	}
+
+	if !contains(string(runOutput), "Buffer size: 1024") {
+		t.Errorf("unexpected output, expected 'Buffer size: 1024', got: %s", runOutput)
+	}
+	if !contains(string(runOutput), "Timeout: 5000") {
+		t.Errorf("unexpected output, expected 'Timeout: 5000', got: %s", runOutput)
+	}
+}
+
 // TestGlobalVariables tests global variable support
 func TestGlobalVariables(t *testing.T) {
 	tmpDir := t.TempDir()
