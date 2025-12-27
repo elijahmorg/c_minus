@@ -428,3 +428,211 @@ pub enum Status {
 		t.Errorf("expected doc comment 'Status represents the status of an item.', got '%s'", e.DocComment)
 	}
 }
+
+func TestParseBitFields(t *testing.T) {
+	source := `module "hardware"
+
+pub struct StatusRegister {
+    unsigned int ready : 1;
+    unsigned int error : 1;
+    unsigned int mode : 3;
+    unsigned int reserved : 27;
+};
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 1 {
+		t.Fatalf("expected 1 declaration, got %d", len(file.Decls))
+	}
+
+	s := file.Decls[0].Struct
+	if s == nil {
+		t.Fatal("expected struct declaration")
+	}
+
+	if s.Name != "StatusRegister" {
+		t.Errorf("expected struct name 'StatusRegister', got '%s'", s.Name)
+	}
+
+	// Verify the body contains bit field syntax
+	if !contains(s.Body, ": 1") {
+		t.Errorf("expected bit field syntax in body, got '%s'", s.Body)
+	}
+
+	if !contains(s.Body, ": 3") {
+		t.Errorf("expected bit field syntax ': 3' in body, got '%s'", s.Body)
+	}
+
+	if !contains(s.Body, ": 27") {
+		t.Errorf("expected bit field syntax ': 27' in body, got '%s'", s.Body)
+	}
+}
+
+func TestParseVariadicFunction(t *testing.T) {
+	source := `module "logging"
+
+cimport "stdarg.h"
+cimport "stdio.h"
+
+pub func log(char* fmt, ...) void {
+    // variadic implementation
+}
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 1 {
+		t.Fatalf("expected 1 declaration, got %d", len(file.Decls))
+	}
+
+	fn := file.Decls[0].Function
+	if fn == nil {
+		t.Fatal("expected function declaration")
+	}
+
+	if fn.Name != "log" {
+		t.Errorf("expected function name 'log', got '%s'", fn.Name)
+	}
+
+	// Should have 2 parameters: "char* fmt" and "..."
+	if len(fn.Params) != 2 {
+		t.Fatalf("expected 2 parameters (fmt and ...), got %d", len(fn.Params))
+	}
+
+	// First param should be char* fmt
+	if fn.Params[0].Type != "char*" || fn.Params[0].Name != "fmt" {
+		t.Errorf("expected first param 'char* fmt', got type='%s' name='%s'",
+			fn.Params[0].Type, fn.Params[0].Name)
+	}
+
+	// Second param should be the variadic marker
+	if fn.Params[1].Type != "..." || fn.Params[1].Name != "" {
+		t.Errorf("expected second param to be variadic '...', got type='%s' name='%s'",
+			fn.Params[1].Type, fn.Params[1].Name)
+	}
+}
+
+// contains checks if substr is in s
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func TestParseGlobalVariable(t *testing.T) {
+	source := `module "state"
+
+// Public global with initializer
+pub int error_count = 0;
+
+// Private global
+int last_error_code = 0;
+
+// Uninitialized global
+pub char* buffer;
+
+// Const global
+pub const char* version = "1.0.0";
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 4 {
+		t.Fatalf("expected 4 declarations, got %d", len(file.Decls))
+	}
+
+	// Check first global: pub int error_count = 0
+	g1 := file.Decls[0].Global
+	if g1 == nil {
+		t.Fatal("expected first declaration to be a global")
+	}
+	if !g1.Public {
+		t.Error("expected error_count to be public")
+	}
+	if g1.Type != "int" {
+		t.Errorf("expected type 'int', got '%s'", g1.Type)
+	}
+	if g1.Name != "error_count" {
+		t.Errorf("expected name 'error_count', got '%s'", g1.Name)
+	}
+	if g1.Value != "0" {
+		t.Errorf("expected value '0', got '%s'", g1.Value)
+	}
+
+	// Check second global: int last_error_code = 0
+	g2 := file.Decls[1].Global
+	if g2 == nil {
+		t.Fatal("expected second declaration to be a global")
+	}
+	if g2.Public {
+		t.Error("expected last_error_code to be private")
+	}
+	if g2.Name != "last_error_code" {
+		t.Errorf("expected name 'last_error_code', got '%s'", g2.Name)
+	}
+
+	// Check third global: pub char* buffer (uninitialized)
+	g3 := file.Decls[2].Global
+	if g3 == nil {
+		t.Fatal("expected third declaration to be a global")
+	}
+	if g3.Type != "char*" {
+		t.Errorf("expected type 'char*', got '%s'", g3.Type)
+	}
+	if g3.Name != "buffer" {
+		t.Errorf("expected name 'buffer', got '%s'", g3.Name)
+	}
+	if g3.Value != "" {
+		t.Errorf("expected empty value, got '%s'", g3.Value)
+	}
+
+	// Check fourth global: pub const char* version = "1.0.0"
+	g4 := file.Decls[3].Global
+	if g4 == nil {
+		t.Fatal("expected fourth declaration to be a global")
+	}
+	if g4.Type != "const char*" {
+		t.Errorf("expected type 'const char*', got '%s'", g4.Type)
+	}
+	if g4.Name != "version" {
+		t.Errorf("expected name 'version', got '%s'", g4.Name)
+	}
+	if g4.Value != `"1.0.0"` {
+		t.Errorf("expected value '\"1.0.0\"', got '%s'", g4.Value)
+	}
+}

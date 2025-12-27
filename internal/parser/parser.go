@@ -36,6 +36,16 @@ type Decl struct {
 	Union    *UnionDecl
 	Enum     *EnumDecl
 	Typedef  *TypedefDecl
+	Global   *GlobalDecl
+}
+
+// GlobalDecl represents a global variable declaration
+type GlobalDecl struct {
+	Public     bool
+	Type       string // e.g., "int", "char*", "const char*"
+	Name       string
+	Value      string // Initial value (optional, empty if uninitialized)
+	DocComment string
 }
 
 // FuncDecl represents a function declaration
@@ -211,6 +221,14 @@ func manualParse(source string, path string) (*File, error) {
 			}
 			typedefDecl.DocComment = docComment
 			file.Decls = append(file.Decls, &Decl{Typedef: typedefDecl})
+			i += consumed
+		} else if isGlobalVariableDecl(line) {
+			globalDecl, consumed, err := parseGlobal(lines, i)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
+			}
+			globalDecl.DocComment = docComment
+			file.Decls = append(file.Decls, &Decl{Global: globalDecl})
 			i += consumed
 		} else {
 			i++
@@ -676,4 +694,105 @@ func buildDocComment(commentLines []string) string {
 		parts = append(parts, text)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// isGlobalVariableDecl checks if a line looks like a global variable declaration
+// It must:
+// - Optionally start with "pub"
+// - Followed by type(s) and a variable name
+// - End with ";" or "= value;"
+// - Not be a function (no "func" keyword, no "(" in declaration)
+// - Not be a type definition (no "struct", "union", "enum", "typedef")
+func isGlobalVariableDecl(line string) bool {
+	// Skip if empty or doesn't contain potential declaration
+	if line == "" {
+		return false
+	}
+
+	// Skip module, import, cimport
+	if strings.HasPrefix(line, "module") ||
+		strings.HasPrefix(line, "import") ||
+		strings.HasPrefix(line, "cimport") {
+		return false
+	}
+
+	// Skip if it's a function, struct, union, enum, typedef
+	if strings.Contains(line, "func ") ||
+		strings.Contains(line, "struct ") ||
+		strings.Contains(line, "union ") ||
+		strings.Contains(line, "enum ") ||
+		strings.Contains(line, "typedef ") {
+		return false
+	}
+
+	// Skip if it has parentheses (function declaration or call)
+	if strings.Contains(line, "(") {
+		return false
+	}
+
+	// Check if line starts with "pub " and strip it
+	workLine := line
+	if strings.HasPrefix(workLine, "pub ") {
+		workLine = strings.TrimPrefix(workLine, "pub ")
+		workLine = strings.TrimSpace(workLine)
+	}
+
+	// Must end with ";" to be a declaration (may span multiple lines)
+	// Simple heuristic: looks like "type name" or "type name = value"
+	// The line should have at least 2 tokens
+	fields := strings.Fields(workLine)
+	if len(fields) < 2 {
+		return false
+	}
+
+	// The line should contain = or ; to be a declaration
+	return strings.Contains(line, ";") || strings.Contains(line, "=")
+}
+
+// parseGlobal parses a global variable declaration
+func parseGlobal(lines []string, startIdx int) (*GlobalDecl, int, error) {
+	line := strings.TrimSpace(lines[startIdx])
+
+	globalDecl := &GlobalDecl{}
+
+	// Check for pub modifier
+	if strings.HasPrefix(line, "pub ") {
+		globalDecl.Public = true
+		line = strings.TrimPrefix(line, "pub ")
+		line = strings.TrimSpace(line)
+	}
+
+	// Find the complete declaration (may span multiple lines until ;)
+	fullDecl := line
+	consumed := 1
+	for !strings.Contains(fullDecl, ";") && startIdx+consumed < len(lines) {
+		fullDecl += " " + strings.TrimSpace(lines[startIdx+consumed])
+		consumed++
+	}
+
+	// Remove the trailing semicolon
+	fullDecl = strings.TrimSuffix(strings.TrimSpace(fullDecl), ";")
+
+	// Check if there's an initializer
+	var declPart, valuePart string
+	if eqIdx := strings.Index(fullDecl, "="); eqIdx != -1 {
+		declPart = strings.TrimSpace(fullDecl[:eqIdx])
+		valuePart = strings.TrimSpace(fullDecl[eqIdx+1:])
+	} else {
+		declPart = fullDecl
+	}
+
+	// Parse the type and name from declPart
+	// Format: "type name" or "type1 type2 name" (e.g., "const char* version")
+	fields := strings.Fields(declPart)
+	if len(fields) < 2 {
+		return nil, 0, fmt.Errorf("invalid global declaration: %s", fullDecl)
+	}
+
+	// Name is the last field, type is everything else
+	globalDecl.Name = fields[len(fields)-1]
+	globalDecl.Type = strings.Join(fields[:len(fields)-1], " ")
+	globalDecl.Value = valuePart
+
+	return globalDecl, consumed, nil
 }

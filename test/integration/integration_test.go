@@ -519,6 +519,137 @@ func indexOf(s, substr string) int {
 	return -1
 }
 
+// TestGlobalVariables tests global variable support
+func TestGlobalVariables(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create cm.mod
+	modFile := filepath.Join(tmpDir, "cm.mod")
+	if err := os.WriteFile(modFile, []byte(`module "test/globals"`), 0644); err != nil {
+		t.Fatalf("failed to create cm.mod: %v", err)
+	}
+
+	// Create state module directory
+	stateDir := filepath.Join(tmpDir, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("failed to create state dir: %v", err)
+	}
+
+	// Create state/state.cm with global variables
+	stateCM := `module "state"
+
+// Public counter
+pub int counter = 0;
+
+// Private internal counter
+int internal_counter = 100;
+
+// Version string
+pub const char* version = "1.0.0";
+
+pub func increment() void {
+    counter = counter + 1;
+    internal_counter = internal_counter + 1;
+}
+
+pub func get_counter() int {
+    return counter;
+}
+
+pub func get_internal() int {
+    return internal_counter;
+}
+`
+	if err := os.WriteFile(filepath.Join(stateDir, "state.cm"), []byte(stateCM), 0644); err != nil {
+		t.Fatalf("failed to create state.cm: %v", err)
+	}
+
+	// Create main.cm
+	mainCM := `module "main"
+
+cimport "stdio.h"
+
+import "state"
+
+func main() int {
+    stdio.printf("Initial counter: %d\n", state.counter);
+    state.increment();
+    state.increment();
+    stdio.printf("After increment: %d\n", state.get_counter());
+    stdio.printf("Version: %s\n", state.version);
+    return state.get_counter();
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainCM), 0644); err != nil {
+		t.Fatalf("failed to create main.cm: %v", err)
+	}
+
+	// Find c_minus binary
+	cMinusBinary := findCMinusBinary(t)
+
+	// Run c_minus build
+	cmd := exec.Command(cMinusBinary, "build")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify state.h contains extern declarations
+	buildDir := filepath.Join(tmpDir, ".c_minus")
+	stateH, err := os.ReadFile(filepath.Join(buildDir, "state.h"))
+	if err != nil {
+		t.Fatalf("failed to read state.h: %v", err)
+	}
+	stateHContent := string(stateH)
+
+	if !contains(stateHContent, "extern int state_counter;") {
+		t.Errorf("state.h missing extern declaration for counter, got:\n%s", stateHContent)
+	}
+	if !contains(stateHContent, "extern const char* state_version;") {
+		t.Errorf("state.h missing extern declaration for version, got:\n%s", stateHContent)
+	}
+
+	// Verify state.c contains definitions
+	stateC, err := os.ReadFile(filepath.Join(buildDir, "state_state.c"))
+	if err != nil {
+		t.Fatalf("failed to read state_state.c: %v", err)
+	}
+	stateCContent := string(stateC)
+
+	if !contains(stateCContent, "int state_counter = 0;") {
+		t.Errorf("state.c missing definition for counter, got:\n%s", stateCContent)
+	}
+	if !contains(stateCContent, `const char* state_version = "1.0.0";`) {
+		t.Errorf("state.c missing definition for version, got:\n%s", stateCContent)
+	}
+
+	// Run the binary and verify output
+	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
+	runCmd := exec.Command(binaryPath)
+	runOutput, err := runCmd.CombinedOutput()
+	if err != nil {
+		// Exit code 2 is expected (counter after 2 increments)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() != 2 {
+				t.Fatalf("unexpected exit code: %d, output: %s", exitErr.ExitCode(), runOutput)
+			}
+		} else {
+			t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+		}
+	}
+
+	if !contains(string(runOutput), "Initial counter: 0") {
+		t.Errorf("unexpected output, expected 'Initial counter: 0', got: %s", runOutput)
+	}
+	if !contains(string(runOutput), "After increment: 2") {
+		t.Errorf("unexpected output, expected 'After increment: 2', got: %s", runOutput)
+	}
+	if !contains(string(runOutput), "Version: 1.0.0") {
+		t.Errorf("unexpected output, expected 'Version: 1.0.0', got: %s", runOutput)
+	}
+}
+
 // TestVariadicFunctions tests variadic function support
 func TestVariadicFunctions(t *testing.T) {
 	tmpDir := t.TempDir()

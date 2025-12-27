@@ -20,6 +20,8 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 	typeNames := make(map[string]bool)
 	// Also collect enum values for function body transformation
 	enumValues := make(transform.EnumValueMap)
+	// Also collect global variable names for function body transformation
+	globalVars := make(transform.GlobalVarMap)
 	for _, file := range files {
 		for _, decl := range file.Decls {
 			if decl.Struct != nil {
@@ -30,6 +32,9 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 				typeNames[decl.Enum.Name] = true
 				// Extract enum values from the body
 				extractEnumValues(decl.Enum.Body, decl.Enum.Name, moduleName, enumValues)
+			} else if decl.Global != nil {
+				// Map global variable name to mangled name
+				globalVars[decl.Global.Name] = moduleName + "_" + decl.Global.Name
 			}
 		}
 	}
@@ -39,6 +44,8 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 	privateFuncDecls := []*funcDeclInfo{}
 	publicTypeDecls := []*typeDecl{}
 	privateTypeDecls := []*typeDecl{}
+	publicGlobalDecls := []*globalDecl{}
+	privateGlobalDecls := []*globalDecl{}
 
 	for _, file := range files {
 		for _, decl := range file.Decls {
@@ -110,6 +117,19 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 				} else {
 					privateTypeDecls = append(privateTypeDecls, typeDecl)
 				}
+			} else if decl.Global != nil {
+				gd := &globalDecl{
+					typeName:   decl.Global.Type,
+					name:       decl.Global.Name,
+					value:      decl.Global.Value,
+					public:     decl.Global.Public,
+					docComment: decl.Global.DocComment,
+				}
+				if decl.Global.Public {
+					publicGlobalDecls = append(publicGlobalDecls, gd)
+				} else {
+					privateGlobalDecls = append(privateGlobalDecls, gd)
+				}
 			}
 		}
 	}
@@ -123,18 +143,18 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 	}
 
 	// Generate public header
-	if err := generatePublicHeader(mod, publicTypeDecls, publicFuncDecls, allImports, buildDir); err != nil {
+	if err := generatePublicHeader(mod, publicTypeDecls, publicFuncDecls, publicGlobalDecls, allImports, buildDir); err != nil {
 		return err
 	}
 
 	// Generate internal header (always, even if empty - C files include it)
-	if err := generateInternalHeader(mod, privateTypeDecls, privateFuncDecls, buildDir); err != nil {
+	if err := generateInternalHeader(mod, privateTypeDecls, privateFuncDecls, privateGlobalDecls, buildDir); err != nil {
 		return err
 	}
 
 	// Generate .c files for each source file
 	for i, file := range files {
-		if err := generateCFile(mod, file, mod.Files[i], buildDir, enumValues); err != nil {
+		if err := generateCFile(mod, file, mod.Files[i], buildDir, enumValues, globalVars); err != nil {
 			return err
 		}
 	}
@@ -151,6 +171,15 @@ type typeDecl struct {
 	docComment string // Go-style doc comment
 }
 
+// globalDecl represents a global variable declaration for code generation
+type globalDecl struct {
+	typeName   string // e.g., "int", "char*", "const char*"
+	name       string
+	value      string // Initial value (optional)
+	public     bool
+	docComment string
+}
+
 // funcDeclInfo represents a function declaration for code generation
 type funcDeclInfo struct {
 	signature  string // The C function signature
@@ -158,7 +187,7 @@ type funcDeclInfo struct {
 }
 
 // generatePublicHeader generates the public .h file for a module
-func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publicFuncs []*funcDeclInfo, imports map[string]bool, buildDir string) error {
+func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publicFuncs []*funcDeclInfo, publicGlobals []*globalDecl, imports map[string]bool, buildDir string) error {
 	moduleName := paths.SanitizeModuleName(mod.ImportPath)
 	guardName := strings.ToUpper(moduleName) + "_H"
 
@@ -195,6 +224,15 @@ func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publ
 		sb.WriteString("\n\n")
 	}
 
+	// Public global variable declarations (extern)
+	for _, gd := range publicGlobals {
+		if gd.docComment != "" {
+			sb.WriteString(formatDocComment(gd.docComment))
+		}
+		// In header, emit as extern declaration
+		sb.WriteString(fmt.Sprintf("extern %s %s_%s;\n\n", gd.typeName, moduleName, gd.name))
+	}
+
 	// Public function declarations
 	for _, decl := range publicFuncs {
 		if decl.docComment != "" {
@@ -216,7 +254,7 @@ func generatePublicHeader(mod *project.ModuleInfo, publicTypes []*typeDecl, publ
 }
 
 // generateInternalHeader generates the internal _internal.h file for a module
-func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, privateFuncs []*funcDeclInfo, buildDir string) error {
+func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, privateFuncs []*funcDeclInfo, privateGlobals []*globalDecl, buildDir string) error {
 	moduleName := paths.SanitizeModuleName(mod.ImportPath)
 	guardName := strings.ToUpper(moduleName) + "_INTERNAL_H"
 
@@ -247,6 +285,15 @@ func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, p
 		sb.WriteString("\n\n")
 	}
 
+	// Private global variable declarations (extern for internal header)
+	for _, gd := range privateGlobals {
+		if gd.docComment != "" {
+			sb.WriteString(formatDocComment(gd.docComment))
+		}
+		// In internal header, emit as extern (definition is in .c file)
+		sb.WriteString(fmt.Sprintf("extern %s %s_%s;\n\n", gd.typeName, moduleName, gd.name))
+	}
+
 	// Private function declarations
 	for _, decl := range privateFuncs {
 		if decl.docComment != "" {
@@ -268,7 +315,7 @@ func generateInternalHeader(mod *project.ModuleInfo, privateTypes []*typeDecl, p
 }
 
 // generateCFile generates a .c implementation file
-func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, buildDir string, enumValues transform.EnumValueMap) error {
+func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, buildDir string, enumValues transform.EnumValueMap, globalVars transform.GlobalVarMap) error {
 	moduleName := paths.SanitizeModuleName(mod.ImportPath)
 	baseName := filepath.Base(srcPath)
 	baseName = baseName[:len(baseName)-3] // Remove .cm extension
@@ -303,10 +350,19 @@ func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, b
 
 	sb.WriteString("\n")
 
+	// Emit global variable definitions
+	for _, decl := range file.Decls {
+		if decl.Global != nil {
+			globalDef := generateGlobalDefinition(decl.Global, moduleName)
+			sb.WriteString(globalDef)
+			sb.WriteString("\n\n")
+		}
+	}
+
 	// Emit function implementations
 	for _, decl := range file.Decls {
 		if decl.Function != nil {
-			funcImpl := generateFunctionImplementation(decl.Function, moduleName, importMap, cimportMap, enumValues)
+			funcImpl := generateFunctionImplementation(decl.Function, moduleName, importMap, cimportMap, enumValues, globalVars)
 			sb.WriteString(funcImpl)
 			sb.WriteString("\n\n")
 		}
@@ -319,6 +375,28 @@ func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, b
 	}
 
 	return nil
+}
+
+// generateGlobalDefinition generates a global variable definition for a .c file
+func generateGlobalDefinition(g *parser.GlobalDecl, moduleName string) string {
+	var sb strings.Builder
+
+	// Type and mangled name
+	sb.WriteString(g.Type)
+	sb.WriteString(" ")
+	sb.WriteString(moduleName)
+	sb.WriteString("_")
+	sb.WriteString(g.Name)
+
+	// Optional initializer
+	if g.Value != "" {
+		sb.WriteString(" = ")
+		sb.WriteString(g.Value)
+	}
+
+	sb.WriteString(";")
+
+	return sb.String()
 }
 
 // generateFunctionSignature generates a C function signature with name mangling
@@ -491,7 +569,7 @@ func generateTypeDeclaration(td *typeDecl, moduleName string) string {
 }
 
 // generateFunctionImplementation generates a complete C function implementation
-func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, importMap transform.ImportMap, cimportMap transform.CImportMap, enumValues transform.EnumValueMap) string {
+func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, importMap transform.ImportMap, cimportMap transform.CImportMap, enumValues transform.EnumValueMap, globalVars transform.GlobalVarMap) string {
 	var sb strings.Builder
 
 	// Add line directive for source mapping
@@ -503,8 +581,8 @@ func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, impo
 	sb.WriteString(" ")
 
 	// Transform function body to replace qualified access with mangled names
-	// Also transform C imports (stdio.printf -> printf) and enum values
-	transformedBody := transform.TransformFunctionBodyFull(fn.Body, importMap, cimportMap, enumValues)
+	// Also transform C imports (stdio.printf -> printf), enum values, and global variables
+	transformedBody := transform.TransformFunctionBodyFull(fn.Body, importMap, cimportMap, enumValues, globalVars)
 	sb.WriteString(transformedBody)
 
 	return sb.String()

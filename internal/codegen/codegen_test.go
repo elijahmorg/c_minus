@@ -24,9 +24,10 @@ func TestGeneratePublicHeader(t *testing.T) {
 		{signature: "int math_add(int a, int b)"},
 		{signature: "int math_multiply(int a, int b)"},
 	}
+	publicGlobals := []*globalDecl{}
 
 	imports := make(map[string]bool)
-	err := generatePublicHeader(mod, publicTypes, publicFuncs, imports, tmpDir)
+	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, imports, tmpDir)
 	if err != nil {
 		t.Fatalf("generatePublicHeader failed: %v", err)
 	}
@@ -71,8 +72,9 @@ func TestGenerateInternalHeader(t *testing.T) {
 	privateFuncs := []*funcDeclInfo{
 		{signature: "int math_helper(int x)"},
 	}
+	privateGlobals := []*globalDecl{}
 
-	err := generateInternalHeader(mod, privateTypes, privateFuncs, tmpDir)
+	err := generateInternalHeader(mod, privateTypes, privateFuncs, privateGlobals, tmpDir)
 	if err != nil {
 		t.Fatalf("generateInternalHeader failed: %v", err)
 	}
@@ -140,7 +142,8 @@ func TestGenerateCFile(t *testing.T) {
 	os.MkdirAll(buildDir, 0755)
 
 	enumValues := make(transform.EnumValueMap)
-	err := generateCFile(mod, file, srcFile, buildDir, enumValues)
+	globalVars := make(transform.GlobalVarMap)
+	err := generateCFile(mod, file, srcFile, buildDir, enumValues, globalVars)
 	if err != nil {
 		t.Fatalf("generateCFile failed: %v", err)
 	}
@@ -313,9 +316,10 @@ func TestGeneratePublicHeaderWithDocComments(t *testing.T) {
 			docComment: "multiply multiplies two integers.\nReturns the product.",
 		},
 	}
+	publicGlobals := []*globalDecl{}
 
 	imports := make(map[string]bool)
-	err := generatePublicHeader(mod, publicTypes, publicFuncs, imports, tmpDir)
+	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, imports, tmpDir)
 	if err != nil {
 		t.Fatalf("generatePublicHeader failed: %v", err)
 	}
@@ -342,5 +346,57 @@ func TestGeneratePublicHeaderWithDocComments(t *testing.T) {
 	// Check multi-line doc comment for function (block style)
 	if !strings.Contains(contentStr, "/*\n * multiply multiplies two integers.") {
 		t.Error("missing multi-line function doc comment")
+	}
+}
+
+func TestGenerateGlobalVariables(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mod := &project.ModuleInfo{
+		ImportPath: "state",
+	}
+
+	publicTypes := []*typeDecl{}
+	publicFuncs := []*funcDeclInfo{}
+	publicGlobals := []*globalDecl{
+		{
+			typeName:   "int",
+			name:       "error_count",
+			value:      "0",
+			public:     true,
+			docComment: "Public error counter",
+		},
+		{
+			typeName: "const char*",
+			name:     "version",
+			value:    `"1.0.0"`,
+			public:   true,
+		},
+	}
+
+	imports := make(map[string]bool)
+	err := generatePublicHeader(mod, publicTypes, publicFuncs, publicGlobals, imports, tmpDir)
+	if err != nil {
+		t.Fatalf("generatePublicHeader failed: %v", err)
+	}
+
+	// Read generated file
+	headerPath := filepath.Join(tmpDir, "state.h")
+	content, err := os.ReadFile(headerPath)
+	if err != nil {
+		t.Fatalf("failed to read generated header: %v", err)
+	}
+
+	contentStr := string(content)
+
+	// Check for extern declarations
+	if !strings.Contains(contentStr, "extern int state_error_count;") {
+		t.Errorf("missing extern declaration for error_count, got:\n%s", contentStr)
+	}
+	if !strings.Contains(contentStr, "extern const char* state_version;") {
+		t.Errorf("missing extern declaration for version, got:\n%s", contentStr)
+	}
+	if !strings.Contains(contentStr, "// Public error counter") {
+		t.Error("missing doc comment for global variable")
 	}
 }

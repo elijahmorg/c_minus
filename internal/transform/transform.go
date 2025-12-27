@@ -88,24 +88,29 @@ func getCImportPrefix(headerPath string) string {
 // Example: {"TODO": "ticket_Status_TODO", "IN_PROGRESS": "ticket_Status_IN_PROGRESS"}
 type EnumValueMap map[string]string
 
+// GlobalVarMap maps global variable names to their mangled names
+// Example: {"counter": "state_counter", "version": "state_version"}
+type GlobalVarMap map[string]string
+
 // TransformFunctionBody transforms qualified symbol access in a function body
 // Converts "module.symbol" to "full_module_path_symbol" using the import map
 func TransformFunctionBody(body string, importMap ImportMap) string {
-	return TransformFunctionBodyFull(body, importMap, nil, nil)
+	return TransformFunctionBodyFull(body, importMap, nil, nil, nil)
 }
 
 // TransformFunctionBodyWithEnums transforms qualified symbol access and enum values in a function body
 // Converts "module.symbol" to "full_module_path_symbol" using the import map
 // Also transforms bare enum values like "TODO" to "module_EnumName_TODO"
 func TransformFunctionBodyWithEnums(body string, importMap ImportMap, enumValues EnumValueMap) string {
-	return TransformFunctionBodyFull(body, importMap, nil, enumValues)
+	return TransformFunctionBodyFull(body, importMap, nil, enumValues, nil)
 }
 
-// TransformFunctionBodyFull transforms qualified symbol access, C imports, and enum values
+// TransformFunctionBodyFull transforms qualified symbol access, C imports, enum values, and global variables
 // - For c_minus imports: "module.symbol" -> "module_symbol" (mangled)
 // - For C imports: "stdio.printf" -> "printf" (just strip prefix, no mangling)
 // - For enum values: "TODO" -> "module_EnumName_TODO"
-func TransformFunctionBodyFull(body string, importMap ImportMap, cimportMap CImportMap, enumValues EnumValueMap) string {
+// - For global variables: "counter" -> "module_counter"
+func TransformFunctionBodyFull(body string, importMap ImportMap, cimportMap CImportMap, enumValues EnumValueMap, globalVars GlobalVarMap) string {
 	// Tokenize the body
 	tokens := tokenize(body)
 
@@ -168,6 +173,9 @@ func TransformFunctionBodyFull(body string, importMap ImportMap, cimportMap CImp
 		} else if tok.kind == tokenIdent {
 			// Check if this is an enum value that needs qualification
 			if replacement, ok := enumValues[tok.value]; ok {
+				result.WriteString(replacement)
+			} else if replacement, ok := globalVars[tok.value]; ok {
+				// Check if this is a global variable that needs mangling
 				result.WriteString(replacement)
 			} else {
 				result.WriteString(tok.value)
