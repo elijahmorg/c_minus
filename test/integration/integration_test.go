@@ -1348,3 +1348,112 @@ func main() int {
 		t.Errorf("unexpected output, expected 'PI = 3.14159', got: %s", runOutput)
 	}
 }
+
+// TestLineDirectives tests that #line directives are emitted for source mapping
+func TestLineDirectives(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create cm.mod
+	modFile := filepath.Join(tmpDir, "cm.mod")
+	if err := os.WriteFile(modFile, []byte(`module "test/linedir"`), 0644); err != nil {
+		t.Fatalf("failed to create cm.mod: %v", err)
+	}
+
+	// Create math module directory
+	mathDir := filepath.Join(tmpDir, "math")
+	if err := os.MkdirAll(mathDir, 0755); err != nil {
+		t.Fatalf("failed to create math dir: %v", err)
+	}
+
+	// Create math/math.cm with specific line structure
+	// Line 1: module declaration
+	// Line 2: empty
+	// Line 3: global variable
+	// Line 4: empty
+	// Line 5: function declaration
+	mathCM := `module "math"
+
+pub int counter = 0;
+
+pub func add(int a, int b) int {
+    return a + b;
+}
+
+pub func multiply(int a, int b) int {
+    return a * b;
+}
+`
+	mathPath := filepath.Join(mathDir, "math.cm")
+	if err := os.WriteFile(mathPath, []byte(mathCM), 0644); err != nil {
+		t.Fatalf("failed to create math.cm: %v", err)
+	}
+
+	// Create main.cm
+	mainCM := `module "main"
+
+import "math"
+
+cimport "stdio.h"
+
+func main() int {
+    int sum = math.add(3, 4);
+    int product = math.multiply(3, 4);
+    stdio.printf("sum=%d product=%d\n", sum, product);
+    return 0;
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainCM), 0644); err != nil {
+		t.Fatalf("failed to create main.cm: %v", err)
+	}
+
+	// Find c_minus binary
+	cMinusBinary := findCMinusBinary(t)
+
+	// Run c_minus build
+	cmd := exec.Command(cMinusBinary, "build")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build failed: %v\nOutput: %s", err, output)
+	}
+
+	// Read generated .c file and verify #line directives
+	buildDir := filepath.Join(tmpDir, ".c_minus")
+	mathC, err := os.ReadFile(filepath.Join(buildDir, "math_math.c"))
+	if err != nil {
+		t.Fatalf("failed to read math_math.c: %v", err)
+	}
+	mathCContent := string(mathC)
+
+	// Check for #line directive for global variable (line 3)
+	if !contains(mathCContent, `#line 3 "`) {
+		t.Errorf("math_math.c missing #line directive for global variable at line 3, got:\n%s", mathCContent)
+	}
+
+	// Check for #line directive for add function (line 5)
+	if !contains(mathCContent, `#line 5 "`) {
+		t.Errorf("math_math.c missing #line directive for add function at line 5, got:\n%s", mathCContent)
+	}
+
+	// Check for #line directive for multiply function (line 9)
+	if !contains(mathCContent, `#line 9 "`) {
+		t.Errorf("math_math.c missing #line directive for multiply function at line 9, got:\n%s", mathCContent)
+	}
+
+	// Verify the file path is in the directive
+	if !contains(mathCContent, "math.cm") {
+		t.Errorf("math_math.c #line directives should reference math.cm, got:\n%s", mathCContent)
+	}
+
+	// Run the binary to make sure it still works
+	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
+	runCmd := exec.Command(binaryPath)
+	runOutput, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+	}
+
+	if !contains(string(runOutput), "sum=7 product=12") {
+		t.Errorf("unexpected output, expected 'sum=7 product=12', got: %s", runOutput)
+	}
+}

@@ -57,6 +57,7 @@ type GlobalDecl struct {
 	Name       string
 	Value      string // Initial value (optional, empty if uninitialized)
 	DocComment string
+	Line       int // Line number in source file (1-based)
 }
 
 // DefineDecl represents a #define constant declaration
@@ -75,6 +76,7 @@ type FuncDecl struct {
 	Params     []*Param
 	Body       string
 	DocComment string // Go-style doc comment (comments immediately preceding the declaration)
+	Line       int    // Line number in source file (1-based)
 }
 
 // Param represents a function parameter
@@ -241,6 +243,7 @@ func manualParse(source string, path string) (*File, error) {
 				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
 			}
 			funcDecl.DocComment = docComment
+			funcDecl.Line = i + 1 // 1-based line number
 			file.Decls = append(file.Decls, &Decl{Function: funcDecl})
 			i += consumed
 		} else if strings.Contains(line, "struct") {
@@ -289,6 +292,7 @@ func manualParse(source string, path string) (*File, error) {
 				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
 			}
 			globalDecl.DocComment = docComment
+			globalDecl.Line = i + 1 // 1-based line number
 			file.Decls = append(file.Decls, &Decl{Global: globalDecl})
 			i += consumed
 		} else {

@@ -408,6 +408,10 @@ func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, b
 	// Emit global variable definitions
 	for _, decl := range file.Decls {
 		if decl.Global != nil {
+			// Add #line directive for source mapping
+			if decl.Global.Line > 0 {
+				sb.WriteString(fmt.Sprintf("#line %d \"%s\"\n", decl.Global.Line, srcPath))
+			}
 			globalDef := generateGlobalDefinition(decl.Global, moduleName)
 			sb.WriteString(globalDef)
 			sb.WriteString("\n\n")
@@ -417,7 +421,7 @@ func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, b
 	// Emit function implementations
 	for _, decl := range file.Decls {
 		if decl.Function != nil {
-			funcImpl := generateFunctionImplementation(decl.Function, moduleName, importMap, cimportMap, enumValues, globalVars, defines)
+			funcImpl := generateFunctionImplementation(decl.Function, moduleName, importMap, cimportMap, enumValues, globalVars, defines, srcPath)
 			sb.WriteString(funcImpl)
 			sb.WriteString("\n\n")
 		}
@@ -632,12 +636,13 @@ func generateTypeDeclaration(td *typeDecl, moduleName string) string {
 }
 
 // generateFunctionImplementation generates a complete C function implementation
-func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, importMap transform.ImportMap, cimportMap transform.CImportMap, enumValues transform.EnumValueMap, globalVars transform.GlobalVarMap, defines transform.DefineMap) string {
+func generateFunctionImplementation(fn *parser.FuncDecl, moduleName string, importMap transform.ImportMap, cimportMap transform.CImportMap, enumValues transform.EnumValueMap, globalVars transform.GlobalVarMap, defines transform.DefineMap, srcPath string) string {
 	var sb strings.Builder
 
-	// Add line directive for source mapping
-	// Note: We'd need to track actual line numbers from parser
-	// For now, just emit the function
+	// Add #line directive for source mapping (maps C errors back to .cm file)
+	if fn.Line > 0 && srcPath != "" {
+		sb.WriteString(fmt.Sprintf("#line %d \"%s\"\n", fn.Line, srcPath))
+	}
 
 	// Function signature
 	sb.WriteString(generateFunctionSignature(fn, moduleName))
