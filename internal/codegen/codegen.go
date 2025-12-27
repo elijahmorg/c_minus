@@ -34,8 +34,9 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 				typeNames[decl.Enum.Name] = true
 				// Extract enum values from the body
 				extractEnumValues(decl.Enum.Body, decl.Enum.Name, moduleName, enumValues)
-			} else if decl.Global != nil {
-				// Map global variable name to mangled name
+			} else if decl.Global != nil && !decl.Global.Static {
+				// Map non-static global variable name to mangled name
+				// Static globals are file-local and not mangled
 				globalVars[decl.Global.Name] = moduleName + "_" + decl.Global.Name
 			} else if decl.Define != nil && decl.Define.Public {
 				// Only public defines get mangled; private ones keep their original names
@@ -130,9 +131,13 @@ func GenerateModule(mod *project.ModuleInfo, files []*parser.File, buildDir stri
 					name:       decl.Global.Name,
 					value:      decl.Global.Value,
 					public:     decl.Global.Public,
+					static:     decl.Global.Static,
 					docComment: decl.Global.DocComment,
 				}
-				if decl.Global.Public {
+				// Static globals are file-local, don't add to header lists
+				if decl.Global.Static {
+					// Static globals are handled per-file in generateCFile
+				} else if decl.Global.Public {
 					publicGlobalDecls = append(publicGlobalDecls, gd)
 				} else {
 					privateGlobalDecls = append(privateGlobalDecls, gd)
@@ -196,6 +201,7 @@ type globalDecl struct {
 	name       string
 	value      string // Initial value (optional)
 	public     bool
+	static     bool // File-private (static keyword in C)
 	docComment string
 }
 
@@ -430,12 +436,20 @@ func generateCFile(mod *project.ModuleInfo, file *parser.File, srcPath string, b
 func generateGlobalDefinition(g *parser.GlobalDecl, moduleName string) string {
 	var sb strings.Builder
 
-	// Type and mangled name
-	sb.WriteString(g.Type)
-	sb.WriteString(" ")
-	sb.WriteString(moduleName)
-	sb.WriteString("_")
-	sb.WriteString(g.Name)
+	// Static globals: use static keyword, no name mangling
+	if g.Static {
+		sb.WriteString("static ")
+		sb.WriteString(g.Type)
+		sb.WriteString(" ")
+		sb.WriteString(g.Name)
+	} else {
+		// Type and mangled name
+		sb.WriteString(g.Type)
+		sb.WriteString(" ")
+		sb.WriteString(moduleName)
+		sb.WriteString("_")
+		sb.WriteString(g.Name)
+	}
 
 	// Optional initializer
 	if g.Value != "" {

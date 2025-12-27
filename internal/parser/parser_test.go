@@ -622,6 +622,68 @@ pub #define VERSION "1.0.0"
 	}
 }
 
+func TestParseStaticGlobal(t *testing.T) {
+	source := `module "singleton"
+
+// File-private static global
+static int initialized = 0;
+
+// Static with const
+static const char* internal_name = "secret";
+`
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.cm")
+	if err := os.WriteFile(testFile, []byte(source), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	file, err := ParseFile(testFile)
+	if err != nil {
+		t.Fatalf("ParseFile failed: %v", err)
+	}
+
+	if len(file.Decls) != 2 {
+		t.Fatalf("expected 2 declarations, got %d", len(file.Decls))
+	}
+
+	// Check first static: static int initialized = 0
+	g1 := file.Decls[0].Global
+	if g1 == nil {
+		t.Fatal("expected first declaration to be a global")
+	}
+	if !g1.Static {
+		t.Error("expected initialized to be static")
+	}
+	if g1.Public {
+		t.Error("expected initialized to not be public")
+	}
+	if g1.Type != "int" {
+		t.Errorf("expected type 'int', got '%s'", g1.Type)
+	}
+	if g1.Name != "initialized" {
+		t.Errorf("expected name 'initialized', got '%s'", g1.Name)
+	}
+	if g1.Value != "0" {
+		t.Errorf("expected value '0', got '%s'", g1.Value)
+	}
+
+	// Check second static: static const char* internal_name
+	g2 := file.Decls[1].Global
+	if g2 == nil {
+		t.Fatal("expected second declaration to be a global")
+	}
+	if !g2.Static {
+		t.Error("expected internal_name to be static")
+	}
+	if g2.Type != "const char*" {
+		t.Errorf("expected type 'const char*', got '%s'", g2.Type)
+	}
+	if g2.Name != "internal_name" {
+		t.Errorf("expected name 'internal_name', got '%s'", g2.Name)
+	}
+}
+
 func TestParseGlobalVariable(t *testing.T) {
 	source := `module "state"
 

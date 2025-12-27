@@ -43,6 +43,7 @@ type Decl struct {
 // GlobalDecl represents a global variable declaration
 type GlobalDecl struct {
 	Public     bool
+	Static     bool   // File-private (not visible to other files in module)
 	Type       string // e.g., "int", "char*", "const char*"
 	Name       string
 	Value      string // Initial value (optional, empty if uninitialized)
@@ -761,7 +762,7 @@ func parseDefine(lines []string, startIdx int) (*DefineDecl, int, error) {
 
 // isGlobalVariableDecl checks if a line looks like a global variable declaration
 // It must:
-// - Optionally start with "pub"
+// - Optionally start with "pub" or "static"
 // - Followed by type(s) and a variable name
 // - End with ";" or "= value;"
 // - Not be a function (no "func" keyword, no "(" in declaration)
@@ -793,10 +794,14 @@ func isGlobalVariableDecl(line string) bool {
 		return false
 	}
 
-	// Check if line starts with "pub " and strip it
+	// Check if line starts with "pub " or "static " and strip it
 	workLine := line
 	if strings.HasPrefix(workLine, "pub ") {
 		workLine = strings.TrimPrefix(workLine, "pub ")
+		workLine = strings.TrimSpace(workLine)
+	}
+	if strings.HasPrefix(workLine, "static ") {
+		workLine = strings.TrimPrefix(workLine, "static ")
 		workLine = strings.TrimSpace(workLine)
 	}
 
@@ -822,6 +827,13 @@ func parseGlobal(lines []string, startIdx int) (*GlobalDecl, int, error) {
 	if strings.HasPrefix(line, "pub ") {
 		globalDecl.Public = true
 		line = strings.TrimPrefix(line, "pub ")
+		line = strings.TrimSpace(line)
+	}
+
+	// Check for static modifier
+	if strings.HasPrefix(line, "static ") {
+		globalDecl.Static = true
+		line = strings.TrimPrefix(line, "static ")
 		line = strings.TrimSpace(line)
 	}
 

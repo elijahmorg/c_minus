@@ -519,6 +519,117 @@ func indexOf(s, substr string) int {
 	return -1
 }
 
+// TestStaticGlobals tests static storage class for file-private globals
+func TestStaticGlobals(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create cm.mod
+	modFile := filepath.Join(tmpDir, "cm.mod")
+	if err := os.WriteFile(modFile, []byte(`module "test/static"`), 0644); err != nil {
+		t.Fatalf("failed to create cm.mod: %v", err)
+	}
+
+	// Create singleton module directory
+	singletonDir := filepath.Join(tmpDir, "singleton")
+	if err := os.MkdirAll(singletonDir, 0755); err != nil {
+		t.Fatalf("failed to create singleton dir: %v", err)
+	}
+
+	// Create singleton/singleton.cm with static global
+	singletonCM := `module "singleton"
+
+// File-private initialization flag
+static int initialized = 0;
+
+// Module-visible counter
+int counter = 0;
+
+pub func init() void {
+    if (!initialized) {
+        counter = 100;
+        initialized = 1;
+    }
+}
+
+pub func get_counter() int {
+    return counter;
+}
+
+pub func increment() void {
+    counter = counter + 1;
+}
+`
+	if err := os.WriteFile(filepath.Join(singletonDir, "singleton.cm"), []byte(singletonCM), 0644); err != nil {
+		t.Fatalf("failed to create singleton.cm: %v", err)
+	}
+
+	// Create main.cm
+	mainCM := `module "main"
+
+cimport "stdio.h"
+
+import "singleton"
+
+func main() int {
+    singleton.init();
+    singleton.init();  // Should not re-initialize
+    singleton.increment();
+    int val = singleton.get_counter();
+    stdio.printf("Counter: %d\n", val);
+    return val - 101;  // 100 + 1 = 101, so return 0 on success
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainCM), 0644); err != nil {
+		t.Fatalf("failed to create main.cm: %v", err)
+	}
+
+	// Find c_minus binary
+	cMinusBinary := findCMinusBinary(t)
+
+	// Run c_minus build
+	cmd := exec.Command(cMinusBinary, "build")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify singleton.h does NOT contain static variable
+	buildDir := filepath.Join(tmpDir, ".c_minus")
+	singletonH, err := os.ReadFile(filepath.Join(buildDir, "singleton.h"))
+	if err != nil {
+		t.Fatalf("failed to read singleton.h: %v", err)
+	}
+	singletonHContent := string(singletonH)
+
+	if contains(singletonHContent, "initialized") {
+		t.Errorf("singleton.h should NOT contain static variable 'initialized', got:\n%s", singletonHContent)
+	}
+
+	// Verify singleton.c contains static declaration
+	singletonC, err := os.ReadFile(filepath.Join(buildDir, "singleton_singleton.c"))
+	if err != nil {
+		t.Fatalf("failed to read singleton_singleton.c: %v", err)
+	}
+	singletonCContent := string(singletonC)
+
+	if !contains(singletonCContent, "static int initialized = 0;") {
+		t.Errorf("singleton.c missing static declaration for initialized, got:\n%s", singletonCContent)
+	}
+
+	// Run the binary and verify output
+	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
+	runCmd := exec.Command(binaryPath)
+	runOutput, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+	}
+
+	if !contains(string(runOutput), "Counter: 101") {
+		t.Errorf("unexpected output, expected 'Counter: 101', got: %s", runOutput)
+	}
+}
+
 // TestDefineConstants tests #define constant support
 func TestDefineConstants(t *testing.T) {
 	tmpDir := t.TempDir()
