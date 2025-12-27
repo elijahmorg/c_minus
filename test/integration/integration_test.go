@@ -518,3 +518,86 @@ func indexOf(s, substr string) int {
 	}
 	return -1
 }
+
+// TestVariadicFunctions tests variadic function support
+func TestVariadicFunctions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create cm.mod
+	modFile := filepath.Join(tmpDir, "cm.mod")
+	if err := os.WriteFile(modFile, []byte(`module "test/variadic"`), 0644); err != nil {
+		t.Fatalf("failed to create cm.mod: %v", err)
+	}
+
+	// Create logging module directory
+	loggingDir := filepath.Join(tmpDir, "logging")
+	if err := os.MkdirAll(loggingDir, 0755); err != nil {
+		t.Fatalf("failed to create logging dir: %v", err)
+	}
+
+	// Create logging/logging.cm with variadic function
+	loggingCM := `module "logging"
+
+cimport "stdarg.h"
+cimport "stdio.h"
+
+pub func log(char* fmt, ...) void {
+    stdarg.va_list args;
+    stdarg.va_start(args, fmt);
+    stdio.vprintf(fmt, args);
+    stdarg.va_end(args);
+}
+`
+	if err := os.WriteFile(filepath.Join(loggingDir, "logging.cm"), []byte(loggingCM), 0644); err != nil {
+		t.Fatalf("failed to create logging.cm: %v", err)
+	}
+
+	// Create main.cm
+	mainCM := `module "main"
+
+import "logging"
+
+func main() int {
+    logging.log("Hello %s, number %d\n", "World", 42);
+    return 0;
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.cm"), []byte(mainCM), 0644); err != nil {
+		t.Fatalf("failed to create main.cm: %v", err)
+	}
+
+	// Find c_minus binary
+	cMinusBinary := findCMinusBinary(t)
+
+	// Run c_minus build
+	cmd := exec.Command(cMinusBinary, "build")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("c_minus build failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify logging.h contains variadic function signature
+	buildDir := filepath.Join(tmpDir, ".c_minus")
+	loggingH, err := os.ReadFile(filepath.Join(buildDir, "logging.h"))
+	if err != nil {
+		t.Fatalf("failed to read logging.h: %v", err)
+	}
+	loggingHContent := string(loggingH)
+
+	if !contains(loggingHContent, "void logging_log(char* fmt, ...)") {
+		t.Errorf("logging.h missing variadic function signature, got:\n%s", loggingHContent)
+	}
+
+	// Run the binary and verify output
+	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
+	runCmd := exec.Command(binaryPath)
+	runOutput, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
+	}
+
+	if !contains(string(runOutput), "Hello World, number 42") {
+		t.Errorf("unexpected output, expected 'Hello World, number 42', got: %s", runOutput)
+	}
+}

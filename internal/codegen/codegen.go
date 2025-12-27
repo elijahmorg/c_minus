@@ -348,6 +348,13 @@ func generateFunctionSignature(fn *parser.FuncDecl, moduleName string) string {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
+
+		// Handle variadic parameter
+		if param.Type == "..." {
+			sb.WriteString("...")
+			continue
+		}
+
 		// Transform parameter type: mangle non-primitive types with module prefix
 		paramType := mangleTypeInSignature(param.Type, moduleName)
 

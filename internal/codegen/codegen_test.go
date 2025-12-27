@@ -212,6 +212,18 @@ func TestGenerateFunctionSignature(t *testing.T) {
 			},
 			expected: "int math_getNumber()",
 		},
+		{
+			name: "variadic function",
+			fn: &parser.FuncDecl{
+				Name:       "log",
+				ReturnType: "void",
+				Params: []*parser.Param{
+					{Name: "fmt", Type: "char*"},
+					{Name: "", Type: "..."},
+				},
+			},
+			expected: "void math_log(char* fmt, ...)",
+		},
 	}
 
 	for _, tt := range tests {

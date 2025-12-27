@@ -297,6 +297,7 @@ func findMatchingParen(s string, startIdx int) int {
 
 // parseParams parses function parameters from string like "int a, float b" (C-style)
 // Also handles function pointer parameters like "int (*cmp)(void*, void*)"
+// and variadic parameters "..."
 func parseParams(paramStr string) []*Param {
 	params := []*Param{}
 
@@ -309,6 +310,15 @@ func parseParams(paramStr string) []*Param {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
+			continue
+		}
+
+		// Handle variadic marker "..."
+		if part == "..." {
+			params = append(params, &Param{
+				Name: "",
+				Type: "...",
+			})
 			continue
 		}
 
