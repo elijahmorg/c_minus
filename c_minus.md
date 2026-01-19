@@ -247,7 +247,7 @@ no cm.mod found
 - ❌ Import aliasing (`import m "math"`)
 - ❌ Multiple return values
 - ❌ Unqualified imports
-- ❌ Circular dependencies
+- ❌ will never be supported - Circular dependencies
 - ❌ Symbol validation in transpiler (fails at C compile time)
 
 ## For LLMs

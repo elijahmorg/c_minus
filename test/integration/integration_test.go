@@ -4,8 +4,38 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// findCMinusBinary locates or builds the c_minus compiler binary
+func findCMinusBinary(t *testing.T) string {
+	t.Helper()
+
+	// Try to find existing binary relative to test location
+	candidates := []string{
+		"../../c_minus",
+		"../../../c_minus",
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			abs, _ := filepath.Abs(candidate)
+			return abs
+		}
+	}
+
+	// Build it if not found
+	projectRoot := filepath.Join("..", "..")
+	buildCmd := exec.Command("go", "build", "-o", "c_minus", "./cmd/c_minus")
+	buildCmd.Dir = projectRoot
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build c_minus: %v\nOutput: %s", err, output)
+	}
+
+	abs, _ := filepath.Abs(filepath.Join(projectRoot, "c_minus"))
+	return abs
+}
 
 // TestEndToEnd creates a complete C-minus project and builds it
 func TestEndToEnd(t *testing.T) {
@@ -112,12 +142,13 @@ func main() int {
 	mathHContent := string(mathH)
 
 	// Should contain public functions (with name mangling)
-	if !containsAll(mathHContent, "int math_add(int a, int b);", "int math_multiply(int a, int b);") {
+	if !strings.Contains(mathHContent, "int math_add(int a, int b);") ||
+		!strings.Contains(mathHContent, "int math_multiply(int a, int b);") {
 		t.Error("math.h missing public function declarations")
 	}
 
 	// Should NOT contain helper (it's private)
-	if contains(mathHContent, "math_helper") {
+	if strings.Contains(mathHContent, "math_helper") {
 		t.Error("math.h should not contain private function helper")
 	}
 
@@ -130,12 +161,12 @@ func main() int {
 	mathInternalContent := string(mathInternal)
 
 	// Should include public header
-	if !contains(mathInternalContent, `#include "math.h"`) {
+	if !strings.Contains(mathInternalContent, `#include "math.h"`) {
 		t.Error("math_internal.h should include math.h")
 	}
 
 	// Should contain private helper (with name mangling)
-	if !contains(mathInternalContent, "int math_helper()") {
+	if !strings.Contains(mathInternalContent, "int math_helper()") {
 		t.Error("math_internal.h should contain helper declaration")
 	}
 }
@@ -189,7 +220,7 @@ func bFunc() int {
 	}
 
 	// Should mention circular dependency
-	if !contains(string(output), "circular") {
+	if !strings.Contains(string(output), "circular") {
 		t.Errorf("error message should mention circular dependency, got: %s", output)
 	}
 }
@@ -237,7 +268,7 @@ func matrixFunc() int {
 	}
 
 	// Should mention mismatch
-	if !contains(string(output), "mismatch") {
+	if !strings.Contains(string(output), "mismatch") {
 		t.Errorf("error message should mention mismatch, got: %s", output)
 	}
 }
@@ -354,11 +385,11 @@ func main() int {
 	}
 	typesHContent := string(typesH)
 
-	if !contains(typesHContent, "typedef union types_Value") {
+	if !strings.Contains(typesHContent, "typedef union types_Value") {
 		t.Error("types.h missing union definition")
 	}
 
-	if !contains(typesHContent, "typedef int (*Comparator)") {
+	if !strings.Contains(typesHContent, "typedef int (*Comparator)") {
 		t.Error("types.h missing function pointer typedef")
 	}
 
@@ -369,11 +400,11 @@ func main() int {
 	}
 	callbacksHContent := string(callbacksH)
 
-	if !contains(callbacksHContent, "int (*fn)(int)") {
+	if !strings.Contains(callbacksHContent, "int (*fn)(int)") {
 		t.Error("callbacks.h missing function pointer parameter in apply_func")
 	}
 
-	if !contains(callbacksHContent, "int (*cmp)(int, int)") {
+	if !strings.Contains(callbacksHContent, "int (*cmp)(int, int)") {
 		t.Error("callbacks.h missing function pointer parameter in process_array")
 	}
 
@@ -390,7 +421,7 @@ func main() int {
 		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
 	}
 
-	if !contains(string(runOutput), "Union value: 42") {
+	if !strings.Contains(string(runOutput), "Union value: 42") {
 		t.Errorf("unexpected output, expected to contain 'Union value: 42', got: %s", runOutput)
 	}
 }
@@ -459,64 +490,14 @@ func main() int {
 	utilHContent := string(utilH)
 
 	// Check for correct function pointer syntax in apply
-	if !contains(utilHContent, "int util_apply(int val, int (*fn)(int))") {
+	if !strings.Contains(utilHContent, "int util_apply(int val, int (*fn)(int))") {
 		t.Errorf("util.h has incorrect apply signature, got:\n%s", utilHContent)
 	}
 
 	// Check for correct function pointer syntax in transform
-	if !contains(utilHContent, "int util_transform(int a, int b, int (*op)(int, int))") {
+	if !strings.Contains(utilHContent, "int util_transform(int a, int b, int (*op)(int, int))") {
 		t.Errorf("util.h has incorrect transform signature, got:\n%s", utilHContent)
 	}
-}
-
-// Helper functions
-
-func findCMinusBinary(t *testing.T) string {
-	// Try to find the binary in the project
-	candidates := []string{
-		"../../c_minus",
-		"../../../c_minus",
-		"../../../../c_minus",
-	}
-
-	for _, candidate := range candidates {
-		if _, err := os.Stat(candidate); err == nil {
-			abs, _ := filepath.Abs(candidate)
-			return abs
-		}
-	}
-
-	// Try to build it
-	buildCmd := exec.Command("go", "build", "-o", "c_minus", "./cmd/c_minus")
-	buildCmd.Dir = filepath.Join("..", "..")
-	if err := buildCmd.Run(); err != nil {
-		t.Fatalf("failed to build c_minus: %v", err)
-	}
-
-	abs, _ := filepath.Abs(filepath.Join("..", "..", "c_minus"))
-	return abs
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && indexOf(s, substr) >= 0
-}
-
-func containsAll(s string, substrs ...string) bool {
-	for _, substr := range substrs {
-		if !contains(s, substr) {
-			return false
-		}
-	}
-	return true
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
 
 // TestStaticGlobals tests static storage class for file-private globals
@@ -602,7 +583,7 @@ func main() int {
 	}
 	singletonHContent := string(singletonH)
 
-	if contains(singletonHContent, "initialized") {
+	if strings.Contains(singletonHContent, "initialized") {
 		t.Errorf("singleton.h should NOT contain static variable 'initialized', got:\n%s", singletonHContent)
 	}
 
@@ -613,7 +594,7 @@ func main() int {
 	}
 	singletonCContent := string(singletonC)
 
-	if !contains(singletonCContent, "static int initialized = 0;") {
+	if !strings.Contains(singletonCContent, "static int initialized = 0;") {
 		t.Errorf("singleton.c missing static declaration for initialized, got:\n%s", singletonCContent)
 	}
 
@@ -625,7 +606,7 @@ func main() int {
 		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
 	}
 
-	if !contains(string(runOutput), "Counter: 101") {
+	if !strings.Contains(string(runOutput), "Counter: 101") {
 		t.Errorf("unexpected output, expected 'Counter: 101', got: %s", runOutput)
 	}
 }
@@ -710,15 +691,15 @@ func main() int {
 	}
 	configHContent := string(configH)
 
-	if !contains(configHContent, "#define config_MAX_BUFFER 1024") {
+	if !strings.Contains(configHContent, "#define config_MAX_BUFFER 1024") {
 		t.Errorf("config.h missing #define for MAX_BUFFER, got:\n%s", configHContent)
 	}
-	if !contains(configHContent, "#define config_TIMEOUT 5000") {
+	if !strings.Contains(configHContent, "#define config_TIMEOUT 5000") {
 		t.Errorf("config.h missing #define for TIMEOUT, got:\n%s", configHContent)
 	}
 
 	// Verify private defines are NOT in public header
-	if contains(configHContent, "CHUNK_SIZE") {
+	if strings.Contains(configHContent, "CHUNK_SIZE") {
 		t.Errorf("config.h should not contain private CHUNK_SIZE, got:\n%s", configHContent)
 	}
 
@@ -729,23 +710,20 @@ func main() int {
 	}
 	configInternalHContent := string(configInternalH)
 
-	if !contains(configInternalHContent, "#define CHUNK_SIZE 256") {
+	if !strings.Contains(configInternalHContent, "#define CHUNK_SIZE 256") {
 		t.Errorf("config_internal.h missing #define for CHUNK_SIZE, got:\n%s", configInternalHContent)
 	}
 
 	// Verify the binary runs correctly
 	binaryPath := filepath.Join(tmpDir, filepath.Base(tmpDir))
 	runCmd := exec.Command(binaryPath)
-	runOutput, err := runCmd.CombinedOutput()
-	// Exit code 6024 (1024 + 5000) is expected
-	if err != nil {
-		// That's fine, we just want to check output
-	}
+	runOutput, _ := runCmd.CombinedOutput()
+	// Exit code 6024 (1024 + 5000) is expected, so we ignore the error
 
-	if !contains(string(runOutput), "Buffer size: 1024") {
+	if !strings.Contains(string(runOutput), "Buffer size: 1024") {
 		t.Errorf("unexpected output, expected 'Buffer size: 1024', got: %s", runOutput)
 	}
-	if !contains(string(runOutput), "Timeout: 5000") {
+	if !strings.Contains(string(runOutput), "Timeout: 5000") {
 		t.Errorf("unexpected output, expected 'Timeout: 5000', got: %s", runOutput)
 	}
 }
@@ -834,10 +812,10 @@ func main() int {
 	}
 	stateHContent := string(stateH)
 
-	if !contains(stateHContent, "extern int state_counter;") {
+	if !strings.Contains(stateHContent, "extern int state_counter;") {
 		t.Errorf("state.h missing extern declaration for counter, got:\n%s", stateHContent)
 	}
-	if !contains(stateHContent, "extern const char* state_version;") {
+	if !strings.Contains(stateHContent, "extern const char* state_version;") {
 		t.Errorf("state.h missing extern declaration for version, got:\n%s", stateHContent)
 	}
 
@@ -848,10 +826,10 @@ func main() int {
 	}
 	stateCContent := string(stateC)
 
-	if !contains(stateCContent, "int state_counter = 0;") {
+	if !strings.Contains(stateCContent, "int state_counter = 0;") {
 		t.Errorf("state.c missing definition for counter, got:\n%s", stateCContent)
 	}
-	if !contains(stateCContent, `const char* state_version = "1.0.0";`) {
+	if !strings.Contains(stateCContent, `const char* state_version = "1.0.0";`) {
 		t.Errorf("state.c missing definition for version, got:\n%s", stateCContent)
 	}
 
@@ -870,13 +848,13 @@ func main() int {
 		}
 	}
 
-	if !contains(string(runOutput), "Initial counter: 0") {
+	if !strings.Contains(string(runOutput), "Initial counter: 0") {
 		t.Errorf("unexpected output, expected 'Initial counter: 0', got: %s", runOutput)
 	}
-	if !contains(string(runOutput), "After increment: 2") {
+	if !strings.Contains(string(runOutput), "After increment: 2") {
 		t.Errorf("unexpected output, expected 'After increment: 2', got: %s", runOutput)
 	}
-	if !contains(string(runOutput), "Version: 1.0.0") {
+	if !strings.Contains(string(runOutput), "Version: 1.0.0") {
 		t.Errorf("unexpected output, expected 'Version: 1.0.0', got: %s", runOutput)
 	}
 }
@@ -947,7 +925,7 @@ func main() int {
 	}
 	loggingHContent := string(loggingH)
 
-	if !contains(loggingHContent, "void logging_log(char* fmt, ...)") {
+	if !strings.Contains(loggingHContent, "void logging_log(char* fmt, ...)") {
 		t.Errorf("logging.h missing variadic function signature, got:\n%s", loggingHContent)
 	}
 
@@ -959,7 +937,7 @@ func main() int {
 		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
 	}
 
-	if !contains(string(runOutput), "Hello World, number 42") {
+	if !strings.Contains(string(runOutput), "Hello World, number 42") {
 		t.Errorf("unexpected output, expected 'Hello World, number 42', got: %s", runOutput)
 	}
 }
@@ -1056,13 +1034,13 @@ func main() int {
 	}
 	platformHContent := string(platformH)
 
-	if !contains(platformHContent, "void platform_print_name()") {
+	if !strings.Contains(platformHContent, "void platform_print_name()") {
 		t.Errorf("platform.h missing print_name, got:\n%s", platformHContent)
 	}
-	if contains(platformHContent, "feature_func") {
+	if strings.Contains(platformHContent, "feature_func") {
 		t.Error("platform.h should NOT contain feature_func when built without -tags")
 	}
-	if contains(platformHContent, "experimental_func") {
+	if strings.Contains(platformHContent, "experimental_func") {
 		t.Error("platform.h should NOT contain experimental_func when built without -tags")
 	}
 
@@ -1074,7 +1052,7 @@ func main() int {
 		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
 	}
 
-	if !contains(string(runOutput), "Platform: common") {
+	if !strings.Contains(string(runOutput), "Platform: common") {
 		t.Errorf("unexpected output, expected 'Platform: common', got: %s", runOutput)
 	}
 
@@ -1112,10 +1090,10 @@ func main() int {
 	}
 	platformHContent = string(platformH)
 
-	if !contains(platformHContent, "void platform_feature_func()") {
+	if !strings.Contains(platformHContent, "void platform_feature_func()") {
 		t.Errorf("platform.h should contain feature_func when built with -tags feature_x, got:\n%s", platformHContent)
 	}
-	if contains(platformHContent, "experimental_func") {
+	if strings.Contains(platformHContent, "experimental_func") {
 		t.Error("platform.h should NOT contain experimental_func when built with only feature_x tag")
 	}
 
@@ -1126,10 +1104,10 @@ func main() int {
 		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
 	}
 
-	if !contains(string(runOutput), "Platform: common") {
+	if !strings.Contains(string(runOutput), "Platform: common") {
 		t.Errorf("unexpected output, expected 'Platform: common', got: %s", runOutput)
 	}
-	if !contains(string(runOutput), "Feature X enabled") {
+	if !strings.Contains(string(runOutput), "Feature X enabled") {
 		t.Errorf("unexpected output, expected 'Feature X enabled', got: %s", runOutput)
 	}
 
@@ -1167,10 +1145,10 @@ func main() int {
 	}
 	platformHContent = string(platformH)
 
-	if !contains(platformHContent, "void platform_feature_func()") {
+	if !strings.Contains(platformHContent, "void platform_feature_func()") {
 		t.Errorf("platform.h should contain feature_func, got:\n%s", platformHContent)
 	}
-	if !contains(platformHContent, "void platform_experimental_func()") {
+	if !strings.Contains(platformHContent, "void platform_experimental_func()") {
 		t.Errorf("platform.h should contain experimental_func, got:\n%s", platformHContent)
 	}
 
@@ -1181,13 +1159,13 @@ func main() int {
 		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
 	}
 
-	if !contains(string(runOutput), "Platform: common") {
+	if !strings.Contains(string(runOutput), "Platform: common") {
 		t.Errorf("unexpected output, expected 'Platform: common', got: %s", runOutput)
 	}
-	if !contains(string(runOutput), "Feature X enabled") {
+	if !strings.Contains(string(runOutput), "Feature X enabled") {
 		t.Errorf("unexpected output, expected 'Feature X enabled', got: %s", runOutput)
 	}
-	if !contains(string(runOutput), "Experimental mode") {
+	if !strings.Contains(string(runOutput), "Experimental mode") {
 		t.Errorf("unexpected output, expected 'Experimental mode', got: %s", runOutput)
 	}
 }
@@ -1266,10 +1244,10 @@ func main() int {
 	}
 
 	outputStr := string(runOutput)
-	if !contains(outputStr, "Result: 4.0") {
+	if !strings.Contains(outputStr, "Result: 4.0") {
 		t.Errorf("unexpected output, expected 'Result: 4.0', got: %s", outputStr)
 	}
-	if !contains(outputStr, "sqrt(25.0) = 5.00") {
+	if !strings.Contains(outputStr, "sqrt(25.0) = 5.00") {
 		t.Errorf("unexpected output, expected 'sqrt(25.0) = 5.00', got: %s", outputStr)
 	}
 }
@@ -1344,7 +1322,7 @@ func main() int {
 		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
 	}
 
-	if !contains(string(runOutput), "PI = 3.14159") {
+	if !strings.Contains(string(runOutput), "PI = 3.14159") {
 		t.Errorf("unexpected output, expected 'PI = 3.14159', got: %s", runOutput)
 	}
 }
@@ -1426,22 +1404,22 @@ func main() int {
 	mathCContent := string(mathC)
 
 	// Check for #line directive for global variable (line 3)
-	if !contains(mathCContent, `#line 3 "`) {
+	if !strings.Contains(mathCContent, `#line 3 "`) {
 		t.Errorf("math_math.c missing #line directive for global variable at line 3, got:\n%s", mathCContent)
 	}
 
 	// Check for #line directive for add function (line 5)
-	if !contains(mathCContent, `#line 5 "`) {
+	if !strings.Contains(mathCContent, `#line 5 "`) {
 		t.Errorf("math_math.c missing #line directive for add function at line 5, got:\n%s", mathCContent)
 	}
 
 	// Check for #line directive for multiply function (line 9)
-	if !contains(mathCContent, `#line 9 "`) {
+	if !strings.Contains(mathCContent, `#line 9 "`) {
 		t.Errorf("math_math.c missing #line directive for multiply function at line 9, got:\n%s", mathCContent)
 	}
 
 	// Verify the file path is in the directive
-	if !contains(mathCContent, "math.cm") {
+	if !strings.Contains(mathCContent, "math.cm") {
 		t.Errorf("math_math.c #line directives should reference math.cm, got:\n%s", mathCContent)
 	}
 
@@ -1453,7 +1431,7 @@ func main() int {
 		t.Fatalf("binary execution failed: %v\nOutput: %s", err, runOutput)
 	}
 
-	if !contains(string(runOutput), "sum=7 product=12") {
+	if !strings.Contains(string(runOutput), "sum=7 product=12") {
 		t.Errorf("unexpected output, expected 'sum=7 product=12', got: %s", runOutput)
 	}
 }
