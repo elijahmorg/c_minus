@@ -122,15 +122,22 @@ type TypedefDecl struct {
 
 // Manual parser implementation - no Participle code generation needed
 
-// ParseFile parses a .cm file
+// ParseFile parses a .cm file.
 func ParseFile(path string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// For now, use a simpler manual parser until we refine Participle grammar
-	return manualParse(string(data), path)
+	return ParseSource(string(data), path)
+}
+
+// ParseSource parses C-minus source code provided as a string.
+//
+// This is primarily used by the LSP server for in-memory documents.
+func ParseSource(source string, path string) (*File, error) {
+	// For now, use a simpler manual parser until we refine Participle grammar.
+	return manualParse(source, path)
 }
 
 // manualParse is a simple manual parser for initial implementation

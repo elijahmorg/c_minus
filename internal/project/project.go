@@ -28,6 +28,22 @@ func NewBuildContext(customTags []string, release bool) *BuildContext {
 	return ctx
 }
 
+// ImportPrefix returns the last path segment used as the import prefix.
+// Example: "utils/io" -> "io".
+func ImportPrefix(importPath string) string {
+	last := importPath
+	for i := len(importPath) - 1; i >= 0; i-- {
+		if importPath[i] == '/' {
+			last = importPath[i+1:]
+			break
+		}
+	}
+	if last == "" {
+		return importPath
+	}
+	return last
+}
+
 // Project represents a C-minus project with all its modules
 type Project struct {
 	RootPath   string                 // Filesystem path to project root (where cm.mod is)
