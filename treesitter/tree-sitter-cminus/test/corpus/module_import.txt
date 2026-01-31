@@ -1,0 +1,38 @@
+================================================================================
+Module, import, and cimport
+================================================================================
+
+module "main"
+import "math"
+cimport "stdio.h"
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (module_decl
+    path: (string_literal
+      (string_content)))
+  (import_decl
+    path: (import_path))
+  (cimport_decl
+    path: (cimport_path)))
+
+================================================================================
+Module after declaration (negative)
+================================================================================
+
+int x;
+module "main"
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (declaration
+    type: (primitive_type)
+    declarator: (identifier))
+  (expression_statement
+    (concatenated_string
+      (identifier)
+      (string_literal
+        (string_content)))
+    (MISSING ";")))

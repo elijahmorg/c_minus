@@ -1,0 +1,82 @@
+================================================================================
+Module-qualified calls and enum values
+================================================================================
+
+module "main"
+import "ticket"
+import "state"
+cimport "stdio.h"
+
+ticket.create_ticket();
+stdio.printf("ok");
+state.State.IDLE;
+ticket.MAX_TICKETS;
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (module_decl
+    path: (string_literal
+      (string_content)))
+  (import_decl
+    path: (import_path))
+  (import_decl
+    path: (import_path))
+  (cimport_decl
+    path: (cimport_path))
+  (expression_statement
+    (module_qualified_call
+      function: (module_qualified_identifier
+        module: (module_identifier)
+        name: (identifier))
+      arguments: (argument_list)))
+  (expression_statement
+    (module_qualified_call
+      function: (module_qualified_identifier
+        module: (module_identifier)
+        name: (identifier))
+      arguments: (argument_list
+        (string_literal
+          (string_content)))))
+  (expression_statement
+    (module_qualified_enum
+      module: (module_identifier)
+      type: (identifier)
+      name: (identifier)))
+  (qualified_type
+    module: (module_identifier)
+    name: (type_identifier)))
+
+================================================================================
+Non-module-qualified field access (negative)
+================================================================================
+
+module "main"
+import "foo.bar/baz.qux"
+cimport "sys/socket.proto"
+
+baz.qux();
+socket.open();
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (module_decl
+    path: (string_literal
+      (string_content)))
+  (import_decl
+    path: (import_path))
+  (cimport_decl
+    path: (cimport_path))
+  (expression_statement
+    (call_expression
+      function: (field_expression
+        argument: (identifier)
+        field: (field_identifier))
+      arguments: (argument_list)))
+  (expression_statement
+    (call_expression
+      function: (field_expression
+        argument: (identifier)
+        field: (field_identifier))
+      arguments: (argument_list))))

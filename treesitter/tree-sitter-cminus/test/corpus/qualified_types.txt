@@ -1,0 +1,60 @@
+================================================================================
+Qualified types in declarations
+================================================================================
+
+module "main"
+import "ticket"
+
+ticket.Ticket t;
+ticket.Ticket *ptr;
+
+typedef ticket.Ticket TicketAlias;
+
+struct Box {
+  ticket.Ticket value;
+};
+
+int use(ticket.Ticket input);
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (module_decl
+    path: (string_literal
+      (string_content)))
+  (import_decl
+    path: (import_path))
+  (declaration
+    type: (qualified_type
+      module: (module_identifier)
+      name: (type_identifier))
+    declarator: (identifier))
+  (declaration
+    type: (qualified_type
+      module: (module_identifier)
+      name: (type_identifier))
+    declarator: (pointer_declarator
+      declarator: (identifier)))
+  (type_definition
+    type: (qualified_type
+      module: (module_identifier)
+      name: (type_identifier))
+    declarator: (type_identifier))
+  (struct_specifier
+    name: (type_identifier)
+    body: (field_declaration_list
+      (field_declaration
+        type: (qualified_type
+          module: (module_identifier)
+          name: (type_identifier))
+        declarator: (field_identifier))))
+  (declaration
+    type: (primitive_type)
+    declarator: (function_declarator
+      declarator: (identifier)
+      parameters: (parameter_list
+        (parameter_declaration
+          type: (qualified_type
+            module: (module_identifier)
+            name: (type_identifier))
+          declarator: (identifier))))))

@@ -1,0 +1,46 @@
+================================================================================
+C-minus function definitions
+================================================================================
+
+module "main"
+import "math"
+
+pub func add(a int, b math.Vec3) int {
+  return a;
+}
+
+func main() int {
+  return 0;
+}
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (module_decl
+    path: (string_literal
+      (string_content)))
+  (import_decl
+    path: (import_path))
+  (cminus_function_definition
+    (pub_modifier)
+    name: (identifier)
+    parameters: (cminus_parameter_list
+      (cminus_parameter_declaration
+        name: (identifier)
+        type: (primitive_type))
+      (cminus_parameter_declaration
+        name: (identifier)
+        type: (qualified_type
+          module: (module_identifier)
+          name: (type_identifier))))
+    return_type: (primitive_type)
+    body: (compound_statement
+      (return_statement
+        (identifier))))
+  (cminus_function_definition
+    name: (identifier)
+    parameters: (cminus_parameter_list)
+    return_type: (primitive_type)
+    body: (compound_statement
+      (return_statement
+        (number_literal)))))
